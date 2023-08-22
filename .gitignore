@@ -2,3 +2,6 @@ tensorrt_llm_july-release-v1/build
 tensorrt_llm_july-release-v1/cpp/build
 *.so
 *.a
+
+whisper_models/whisper-base.en
+whisper_models/whisper-medium.en
