@@ -1,6 +1,8 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+import numpy as np
+
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from datasets import load_dataset
 
@@ -12,6 +14,7 @@ model = WhisperForConditionalGeneration.from_pretrained("whisper-medium.en")
 ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
 
 sample = ds[0]["audio"]
+
 input_features = processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
 # print(sample['array'].shape,input_features.shape)
 
