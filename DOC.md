@@ -13,7 +13,11 @@ pip install -e .
 
 - [WhisperForConditionalGeneration.generate](transformers/src/transformers/models/whisper/modeling_whisper.py)
     - [GenerationMixin.generate](transformers/src/transformers/generation/utils.py)
+        - [GenerationMixin._prepare_encoder_decoder_kwargs_for_generation](transformers/src/transformers/generation/utils.py)
+            - [WhisperEncoder.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
+                - [WhisperEncoderLayer.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
         - [GenerationMixin.greedy_search](transformers/src/transformers/generation/utils.py)
             - [WhisperForConditionalGeneration.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                 - [WhisperModel.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                     - [WhisperDecoder.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
+                        - [WhisperDecoderLayer.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
