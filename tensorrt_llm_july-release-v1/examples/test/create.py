@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from activations import ACT2FN
 
 class WhisperEncoderAttention(nn.Module):
     def __init__(
@@ -7,7 +8,6 @@ class WhisperEncoderAttention(nn.Module):
         embed_dim: int = 512,
         num_heads: int = 8,
         dropout: float = 0.0,
-        is_decoder: bool = False,
         bias: bool = True,
     ):
         super().__init__()
@@ -16,7 +16,6 @@ class WhisperEncoderAttention(nn.Module):
         self.dropout = dropout
         self.head_dim = embed_dim // num_heads
         self.scaling = self.head_dim**-0.5
-        self.is_decoder = is_decoder
 
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -58,10 +57,45 @@ class WhisperEncoderAttention(nn.Module):
 
         return attn_output
 
+class WhisperEncoderLayer(nn.Module):
+    def __init__(self, d_model=512, encoder_attention_heads=8, activation_function='gelu', encoder_ffn_dim=2048):
+        super().__init__()
+        self.embed_dim = d_model
+        self.self_attn = WhisperEncoderAttention(
+            embed_dim=self.embed_dim,
+            num_heads=encoder_attention_heads,
+        )
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.activation_fn = ACT2FN[activation_function]
+        self.fc1 = nn.Linear(self.embed_dim, encoder_ffn_dim)
+        self.fc2 = nn.Linear(encoder_ffn_dim, self.embed_dim)
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        
+        residual = hidden_states
+        hidden_states = self.self_attn_layer_norm(hidden_states)
+        hidden_states = self.self_attn(hidden_states=hidden_states)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+        hidden_states = self.activation_fn(self.fc1(hidden_states))
+        hidden_states = self.fc2(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = hidden_states
+
+        return outputs
+
+
 class SimpleConvTorchNet(nn.Module):
     def __init__(self):
         super(SimpleConvTorchNet, self).__init__()
-        self.attn = WhisperEncoderAttention()
+        self.attn = WhisperEncoderLayer()
 
     def forward(self, x):
         x = self.attn(x)

@@ -38,10 +38,18 @@ if __name__ == '__main__':
 
     # # load weight from torch
     ckpt = torch.load('weight.pth',map_location='cpu')
-    tensorrt_llm_test.attn.qkv.weight.value = torch.cat([ckpt['attn.q_proj.weight'],ckpt['attn.k_proj.weight'],ckpt['attn.v_proj.weight']],dim=0).numpy()
-    tensorrt_llm_test.attn.qkv.bias.value = torch.cat([ckpt['attn.q_proj.bias'],torch.zeros_like(ckpt['attn.q_proj.bias']),ckpt['attn.v_proj.bias']],dim=0).numpy()
-    tensorrt_llm_test.attn.dense.weight.value = ckpt['attn.out_proj.weight'].numpy()
-    tensorrt_llm_test.attn.dense.bias.value = ckpt['attn.out_proj.bias'].numpy()
+    tensorrt_llm_test.encoder_layer.self_attn.qkv.weight.value = torch.cat([ckpt['attn.self_attn.q_proj.weight'],ckpt['attn.self_attn.k_proj.weight'],ckpt['attn.self_attn.v_proj.weight']],dim=0).numpy()
+    tensorrt_llm_test.encoder_layer.self_attn.qkv.bias.value = torch.cat([ckpt['attn.self_attn.q_proj.bias'],torch.zeros_like(ckpt['attn.self_attn.q_proj.bias']),ckpt['attn.self_attn.v_proj.bias']],dim=0).numpy()
+    tensorrt_llm_test.encoder_layer.self_attn.dense.weight.value = ckpt['attn.self_attn.out_proj.weight'].numpy()
+    tensorrt_llm_test.encoder_layer.self_attn.dense.bias.value = ckpt['attn.self_attn.out_proj.bias'].numpy()
+    tensorrt_llm_test.encoder_layer.self_attn_layer_norm.weight.value = ckpt['attn.self_attn_layer_norm.weight'].numpy()
+    tensorrt_llm_test.encoder_layer.self_attn_layer_norm.bias.value = ckpt['attn.self_attn_layer_norm.bias'].numpy()
+    tensorrt_llm_test.encoder_layer.fc1.weight.value = ckpt['attn.fc1.weight'].numpy()
+    tensorrt_llm_test.encoder_layer.fc1.bias.value = ckpt['attn.fc1.bias'].numpy()
+    tensorrt_llm_test.encoder_layer.fc2.weight.value = ckpt['attn.fc2.weight'].numpy()
+    tensorrt_llm_test.encoder_layer.fc2.bias.value = ckpt['attn.fc2.bias'].numpy()
+    tensorrt_llm_test.encoder_layer.final_layer_norm.weight.value = ckpt['attn.final_layer_norm.weight'].numpy()
+    tensorrt_llm_test.encoder_layer.final_layer_norm.bias.value = ckpt['attn.final_layer_norm.bias'].numpy()
 
     network = builder.create_network()
     network.trt_network.name = 'SimpleAttn'

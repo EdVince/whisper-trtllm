@@ -444,8 +444,6 @@ class WhisperEncoderAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.is_decoder = is_decoder
 
-        print(embed_dim,num_heads,bias)
-
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
         self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -499,6 +497,7 @@ class WhisperEncoderAttention(nn.Module):
 class WhisperEncoderLayer(nn.Module):
     def __init__(self, config: WhisperConfig):
         super().__init__()
+        print(config.d_model,config.encoder_attention_heads,config.activation_function,config.encoder_ffn_dim)
         self.embed_dim = config.d_model
         self.self_attn = WhisperEncoderAttention(
             embed_dim=self.embed_dim,
@@ -533,12 +532,7 @@ class WhisperEncoderLayer(nn.Module):
         """
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            layer_head_mask=layer_head_mask,
-            output_attentions=output_attentions,
-        )
+        hidden_states = self.self_attn(hidden_states=hidden_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states

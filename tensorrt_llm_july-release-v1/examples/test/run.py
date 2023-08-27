@@ -46,7 +46,7 @@ if __name__ == '__main__':
     
     # malloc buffer
     inputs = {
-        'data': torch.ones(1,1500,512).cuda(),
+        'data': torch.rand(1,1500,512).cuda(),
         'length': torch.Tensor([1.0]).cuda()
     }
     outputs = {}
