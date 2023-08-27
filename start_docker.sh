@@ -8,4 +8,4 @@ docker run --gpus all \
   -v /root/workspace/trt2023:/root/workspace/trt2023 \
   registry.cn-hangzhou.aliyuncs.com/trt-hackathon/trt-hackathon:final_v1 sleep 8640000
 
-docker exec -it trt2023 /bin/bash 
+docker exec -it trt2023 /bin/bash

@@ -16,8 +16,11 @@ pip install -e .
         - [GenerationMixin._prepare_encoder_decoder_kwargs_for_generation](transformers/src/transformers/generation/utils.py)
             - [WhisperEncoder.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                 - [WhisperEncoderLayer.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
+                    - WhisperAttention不带cache的一个很典型的qkv self attention
         - [GenerationMixin.greedy_search](transformers/src/transformers/generation/utils.py)
             - [WhisperForConditionalGeneration.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                 - [WhisperModel.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                     - [WhisperDecoder.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
                         - [WhisperDecoderLayer.forward](transformers/src/transformers/models/whisper/modeling_whisper.py)
+                            - WhisperAttention self/cross attn + w/wo cache
+

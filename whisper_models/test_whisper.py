@@ -8,7 +8,7 @@ from datasets import load_dataset
 
 # load model and processor
 processor = WhisperProcessor.from_pretrained("whisper-base.en")
-model = WhisperForConditionalGeneration.from_pretrained("whisper-medium.en")
+model = WhisperForConditionalGeneration.from_pretrained("whisper-base.en")
 
 # load dummy dataset and read audio files
 ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")

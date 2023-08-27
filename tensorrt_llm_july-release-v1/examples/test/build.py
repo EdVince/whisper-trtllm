@@ -24,7 +24,7 @@ if __name__ == '__main__':
     # create builder
     builder = Builder()
     builder_config = builder.create_builder_config(
-        name='SimpleConv',
+        name='SimpleAttn',
         precision='float32',
         timing_cache='model.cache',
         tensor_parallel=1,
@@ -36,15 +36,15 @@ if __name__ == '__main__':
     # create tensort-llm model
     tensorrt_llm_test = tensorrt_llm.models.SimpleConvTRTLLMNet()
 
-    # load weight from torch
-    torch_weight = torch.load('weight.pth',map_location='cpu')
-    tensorrt_llm_test.conv1.weight.value = torch_weight['conv1.weight'].numpy()
-    tensorrt_llm_test.conv1.bias.value = torch_weight['conv1.bias'].numpy()
-    tensorrt_llm_test.conv2.weight.value = torch_weight['conv2.weight'].numpy()
-    tensorrt_llm_test.conv2.bias.value = torch_weight['conv2.bias'].numpy()
-    
+    # # load weight from torch
+    ckpt = torch.load('weight.pth',map_location='cpu')
+    tensorrt_llm_test.attn.qkv.weight.value = torch.cat([ckpt['attn.q_proj.weight'],ckpt['attn.k_proj.weight'],ckpt['attn.v_proj.weight']],dim=0).numpy()
+    tensorrt_llm_test.attn.qkv.bias.value = torch.cat([ckpt['attn.q_proj.bias'],torch.zeros_like(ckpt['attn.q_proj.bias']),ckpt['attn.v_proj.bias']],dim=0).numpy()
+    tensorrt_llm_test.attn.dense.weight.value = ckpt['attn.out_proj.weight'].numpy()
+    tensorrt_llm_test.attn.dense.bias.value = ckpt['attn.out_proj.bias'].numpy()
+
     network = builder.create_network()
-    network.trt_network.name = 'SimpleConv'
+    network.trt_network.name = 'SimpleAttn'
 
     with net_guard(network):
 
@@ -58,4 +58,4 @@ if __name__ == '__main__':
 
     assert engine is not None, f'Failed to build engine'
 
-    serialize_engine(engine, 'simpleconv.engine')
+    serialize_engine(engine, 'simpleattn.engine')
