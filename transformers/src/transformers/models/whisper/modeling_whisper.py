@@ -497,7 +497,6 @@ class WhisperEncoderAttention(nn.Module):
 class WhisperEncoderLayer(nn.Module):
     def __init__(self, config: WhisperConfig):
         super().__init__()
-        print(config.d_model,config.encoder_attention_heads,config.activation_function,config.encoder_ffn_dim)
         self.embed_dim = config.d_model
         self.self_attn = WhisperEncoderAttention(
             embed_dim=self.embed_dim,
@@ -896,6 +895,7 @@ class WhisperEncoder(WhisperPreTrainedModel):
             return_dict (`bool`, *optional*):
                 Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
         """
+
         inputs_embeds = nn.functional.gelu(self.conv1(input_features))
         inputs_embeds = nn.functional.gelu(self.conv2(inputs_embeds))
         inputs_embeds = inputs_embeds.permute(0, 2, 1)
