@@ -39,15 +39,19 @@ if __name__ == '__main__':
 
     # inference output shape
     inputs_shape = [
-        TensorInfo('data',trt.float32,(1,80,3000)),
-        TensorInfo('length',trt.float32,(1,))
+        TensorInfo('data',trt.float32,(1,1,512)),
+        TensorInfo('length',trt.float32,(1,)),
+        TensorInfo('key_value_states',trt.float32,(1,1500,512)),
+        TensorInfo('past_key_value',trt.float32,(2,8,1500,64))
     ]
     outputs_shape = session.infer_shapes(inputs_shape)
     
     # malloc buffer
     inputs = {
-        'data': torch.rand(1,80,3000).cuda(),
-        'length': torch.Tensor([1.0]).cuda()
+        'data': torch.rand(1,1,512).cuda(),
+        'length': torch.Tensor([1.0]).cuda(),
+        'key_value_states': torch.rand(1,1500,512).cuda(),
+        'past_key_value': torch.rand(2,8,1500,64).cuda(),
     }
     outputs = {}
     for output in outputs_shape:
@@ -57,17 +61,22 @@ if __name__ == '__main__':
     with _scoped_stream() as stream:
         ok = session.run(inputs, outputs, stream)
     torch.cuda.synchronize()
-    trtllm_out = outputs['output']
+    trtllm_out = outputs['output0']
+    trtllm_cache = outputs['output1']
+
+    # print(outputs['output'].shape)
+    # print(outputs['output0'].shape,outputs['output1'].shape)
+
 
     torch_net = SimpleConvTorchNet()
     torch_net.load_state_dict(torch.load('weight.pth',map_location='cpu'))
     torch_net.cuda()
     with torch.inference_mode():
-        torch_out = torch_net(inputs['data'])
+        torch_out, (torch_kcache, torch_vcache) = torch_net(inputs['data'],inputs['key_value_states'],[inputs['past_key_value'][0:1],inputs['past_key_value'][1:2]])
     
-    trtllm_out = trtllm_out.cpu().numpy()
-    torch_out = torch_out.cpu().numpy()
-    diff = np.abs(trtllm_out-torch_out)
-    print(trtllm_out.shape,trtllm_out.min(),trtllm_out.mean(),trtllm_out.max(),trtllm_out.var())
-    print(torch_out.shape,torch_out.min(),torch_out.mean(),torch_out.max(),torch_out.var())
+    a = trtllm_cache[1:2].cpu().numpy()
+    b = torch_vcache.cpu().numpy()
+    diff = np.abs(a-b)
+    print(a.shape,a.min(),a.mean(),a.max(),a.var())
+    print(b.shape,b.min(),b.mean(),b.max(),b.var())
     print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())

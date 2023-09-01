@@ -36,34 +36,16 @@ if __name__ == '__main__':
     # create tensort-llm model
     tensorrt_llm_test = tensorrt_llm.models.SimpleConvTRTLLMNet()
 
-    # load weight from torch
     ckpt = torch.load('weight.pth',map_location='cpu')
-    print(ckpt.keys())
-    tensorrt_llm_test.encoder.conv1.weight.value = ckpt['encoder.conv1.weight'].unsqueeze(2).numpy()
-    tensorrt_llm_test.encoder.conv1.bias.value = ckpt['encoder.conv1.bias'].numpy()
-    tensorrt_llm_test.encoder.conv2.weight.value = ckpt['encoder.conv2.weight'].unsqueeze(2).numpy()
-    tensorrt_llm_test.encoder.conv2.bias.value = ckpt['encoder.conv2.bias'].numpy()
-    tensorrt_llm_test.encoder.embed_positions_weight = ckpt['encoder.embed_positions.weight'].unsqueeze(0).numpy()
-    for k, v in ckpt.items():
-        if 'layers' in k:
-            idx = int(k.split('.')[2])
-            layers_idx = '.'.join(k.split('.')[:3])
-            tensorrt_llm_test.encoder.layers[idx].self_attn.qkv.weight.value = torch.cat([ckpt[layers_idx+'.self_attn.q_proj.weight'],ckpt[layers_idx+'.self_attn.k_proj.weight'],ckpt[layers_idx+'.self_attn.v_proj.weight']],dim=0).numpy()
-            tensorrt_llm_test.encoder.layers[idx].self_attn.qkv.bias.value = torch.cat([ckpt[layers_idx+'.self_attn.q_proj.bias'],torch.zeros_like(ckpt[layers_idx+'.self_attn.q_proj.bias']),ckpt[layers_idx+'.self_attn.v_proj.bias']],dim=0).numpy()
-            tensorrt_llm_test.encoder.layers[idx].self_attn.dense.weight.value = ckpt[layers_idx+'.self_attn.out_proj.weight'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].self_attn.dense.bias.value = ckpt[layers_idx+'.self_attn.out_proj.bias'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].self_attn_layer_norm.weight.value = ckpt[layers_idx+'.self_attn_layer_norm.weight'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].self_attn_layer_norm.bias.value = ckpt[layers_idx+'.self_attn_layer_norm.bias'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].fc1.weight.value = ckpt[layers_idx+'.fc1.weight'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].fc1.bias.value = ckpt[layers_idx+'.fc1.bias'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].fc2.weight.value = ckpt[layers_idx+'.fc2.weight'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].fc2.bias.value = ckpt[layers_idx+'.fc2.bias'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].final_layer_norm.weight.value = ckpt[layers_idx+'.final_layer_norm.weight'].numpy()
-            tensorrt_llm_test.encoder.layers[idx].final_layer_norm.bias.value = ckpt[layers_idx+'.final_layer_norm.bias'].numpy()
-    tensorrt_llm_test.encoder.layer_norm.weight.value = ckpt['encoder.layer_norm.weight'].numpy()
-    tensorrt_llm_test.encoder.layer_norm.bias.value = ckpt['encoder.layer_norm.bias'].numpy()
 
-
+    tensorrt_llm_test.attn.q_proj.weight.value = ckpt['attn.q_proj.weight'].numpy()
+    tensorrt_llm_test.attn.q_proj.bias.value = ckpt['attn.q_proj.bias'].numpy()
+    tensorrt_llm_test.attn.k_proj.weight.value = ckpt['attn.k_proj.weight'].numpy()
+    tensorrt_llm_test.attn.v_proj.weight.value = ckpt['attn.v_proj.weight'].numpy()
+    tensorrt_llm_test.attn.v_proj.bias.value = ckpt['attn.v_proj.bias'].numpy()
+    tensorrt_llm_test.attn.dense.weight.value = ckpt['attn.out_proj.weight'].numpy()
+    tensorrt_llm_test.attn.dense.bias.value = ckpt['attn.out_proj.bias'].numpy()
+    
     network = builder.create_network()
     network.trt_network.name = 'SimpleWhisper'
 
@@ -73,7 +55,7 @@ if __name__ == '__main__':
 
         inputs = tensorrt_llm_test.prepare_inputs()
     
-        tensorrt_llm_test(inputs)
+        tensorrt_llm_test(*inputs)
 
     engine = builder.build_engine(network, builder_config)
 

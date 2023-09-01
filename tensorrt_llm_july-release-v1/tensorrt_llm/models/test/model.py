@@ -1,12 +1,23 @@
-import tensorrt as trt
+import enum
+import math
+from dataclasses import dataclass
+from typing import Optional
 
 import torch
+import numpy as np
 
+import tensorrt as trt
+
+from ..._common import default_net, precision
 from ..._utils import str_dtype_to_trt
 from ...functional import (Tensor, RaggedTensor, ACT2FN, 
-                           unsqueeze, gelu, shape, gather, concat, view, permute, constant)
+                           unsqueeze, gelu, shape, gather, 
+                           concat, view, permute, constant, 
+                           split, matmul, softmax, cast)
 from ...layers import Attention, LayerNorm, ColumnLinear, Conv2d
 from ...module import Module, ModuleList
+from ...parameter import Parameter
+from ...layers.linear import ColumnLinear, RowLinear
 
 def squeeze(input, axis):
     dims = input.ndim()
@@ -97,33 +108,256 @@ class WhisperEncoder(Module):
         return hidden_states
 
 
+# class SimpleConvTRTLLMNet(Module):
+
+#     def __init__(self):
+#         super().__init__()
+#         self.encoder = WhisperEncoder()
+
+#     def forward(self, input_features: RaggedTensor):
+
+#         hidden_states = self.encoder(input_features)
+
+#         hidden_states.mark_output('output', str_dtype_to_trt('float32'))
+
+#         return hidden_states
+
+#     def prepare_inputs(self):
+
+#         input_features_data = Tensor(name='data',
+#                     dtype=trt.float32,
+#                     shape=[1, 80, 3000])
+#         input_features_length = Tensor(name='length',
+#                     dtype=trt.float32,
+#                     shape=[1])
+
+#         input_features = RaggedTensor.from_row_lengths(input_features_data, input_features_length)
+
+#         return (input_features)
+
+
+
+
+class AttentionMaskType(enum.Enum):
+    padding = 0
+    causal = 1
+    bidirectional = 2
+
+
+class PositionEmbeddingType(enum.Enum):
+    learned_absolute = enum.auto()
+    rope = enum.auto()
+    alibi = enum.auto()
+
+
+@dataclass
+class InflightBatchingParam:
+    host_beam_widths: Tensor
+    cache_indir_pointers: Tensor
+    host_req_cache_max_seq_lengths: Tensor
+    host_input_lengths: Tensor
+    past_key_value_pointers: Tensor
+    max_input_length: int
+    max_beam_width: int
+    kv_orig_quant_scale: Optional[Tensor] = None
+    kv_quant_orig_scale: Optional[Tensor] = None
+    use_int8_kv_cache: bool = False
+
+    def __post_init__(self):
+        assert self.max_input_length > 0, f"max_input_length must be positive, got {self.max_input_length}"
+        assert self.max_beam_width > 0, f"max_beam_width must be positive, got {self.max_beam_width}"
+
+
+class WhisperDecoderAttention(Module):
+
+    def __init__(self,
+                 hidden_size,
+                 num_attention_heads,
+                 max_position_embeddings,
+                 num_layers=1,
+                 apply_query_key_layer_scaling=False,
+                 bias=True,
+                 dtype=None,
+                 position_embedding_type=PositionEmbeddingType.learned_absolute,
+                 neox_rotary_style=False,
+                 use_int8_kv_cache=False,
+                 rotary_embedding_percentage=1.0,
+                 tp_group=None,
+                 tp_size=1,
+                 multi_block_mode=False,
+                 multi_query_mode=False):
+        super().__init__()
+
+        self.attention_head_size = hidden_size // num_attention_heads
+        self.num_attention_heads = num_attention_heads // tp_size
+        self.num_attention_kv_heads = 1 if multi_query_mode else self.num_attention_heads
+        self.hidden_size = hidden_size // tp_size
+        self.max_position_embeddings = max_position_embeddings
+
+        self.num_layers = num_layers
+        self.apply_query_key_layer_scaling = apply_query_key_layer_scaling
+        self.norm_factor = math.sqrt(self.attention_head_size)
+        self.q_scaling = 1
+        if self.apply_query_key_layer_scaling:
+            self.norm_factor *= self.num_layers
+            self.q_scaling *= self.num_layers
+
+        self.position_embedding_type = position_embedding_type
+        self.multi_block_mode = multi_block_mode
+        self.multi_query_mode = multi_query_mode
+
+        self.rotary_embedding_dim = 0
+        self.neox_rotary_style = neox_rotary_style
+        if self.position_embedding_type == PositionEmbeddingType.rope:
+            self.rotary_embedding_dim = int(self.attention_head_size *
+                                            rotary_embedding_percentage)
+            # TODO: Once we add RotaryEmbedding outside GPTAttention plugin,
+            #       we need to set it up here
+
+        self.dtype = dtype
+
+        self.use_int8_kv_cache = use_int8_kv_cache
+        if self.use_int8_kv_cache:
+            self.kv_orig_quant_scale = Parameter(shape=(1, ), dtype='float32')
+            self.kv_quant_orig_scale = Parameter(shape=(1, ), dtype='float32')
+        else:
+            self.register_parameter('kv_orig_quant_scale', None)
+            self.register_parameter('kv_quant_orig_scale', None)
+
+        # Note: in multi_query_mode, only query heads are split between multiple GPUs,
+        # while key/value head are not split as there is only one head per key/value.
+        # The output feature size is therefore (h/tp + 2) * d, where h is num_heads,
+        # d is head_size, and tp is tensor_parallel_size.
+        # In ColumnLinear op, the output dim is calculated by (h + 2*tp) * d / tp,
+        # which matches the desired output size (h/tp + 2) * d after splitting
+        self.q_proj = ColumnLinear(hidden_size,
+                                hidden_size,
+                                bias=bias,
+                                dtype=dtype,
+                                tp_group=tp_group,
+                                tp_size=tp_size)
+        self.k_proj = ColumnLinear(hidden_size,
+                                hidden_size,
+                                bias=False,
+                                dtype=dtype,
+                                tp_group=tp_group,
+                                tp_size=tp_size)
+        self.v_proj = ColumnLinear(hidden_size,
+                                hidden_size,
+                                bias=bias,
+                                dtype=dtype,
+                                tp_group=tp_group,
+                                tp_size=tp_size)
+        self.dense = RowLinear(hidden_size,
+                               hidden_size,
+                               bias=bias,
+                               dtype=dtype,
+                               tp_group=tp_group,
+                               tp_size=tp_size)
+
+    def forward(self,
+                hidden_states: RaggedTensor,
+                key_value_states: Optional[RaggedTensor] = None,
+                past_key_value: Optional[Tensor] = None
+                ):
+
+        input_lengths = hidden_states.row_lengths
+        max_input_length = hidden_states.max_row_length
+        hidden_states = hidden_states.data
+
+        def transpose_for_scores(x):
+            new_x_shape = concat([
+                shape(x, 0),
+                shape(x, 1), self.num_attention_heads, self.attention_head_size
+            ])
+            return x.view(new_x_shape).permute([0, 2, 1, 3])
+
+        query_states = transpose_for_scores(self.q_proj(hidden_states))
+
+        is_cross_attention = key_value_states is not None
+        is_reuse = past_key_value is not None
+        
+        if is_cross_attention and is_reuse:
+            dumpy_key_value_states = constant(np.zeros((512),dtype=np.float32))
+            key_states = self.k_proj(dumpy_key_value_states)
+            value_states = self.v_proj(dumpy_key_value_states)
+            key_states, value_states = split(past_key_value,1,dim=0)
+        elif is_cross_attention:
+            key_states = transpose_for_scores(self.k_proj(key_value_states))
+            value_states = transpose_for_scores(self.v_proj(key_value_states))
+        elif is_reuse:
+            key_states = transpose_for_scores(self.k_proj(hidden_states))
+            value_states = transpose_for_scores(self.v_proj(hidden_states))
+            past_key_states, past_value_states = split(past_key_value,1,dim=0)
+            key_states = concat([past_key_states, key_states], dim=2)
+            value_states = concat([past_value_states, value_states], dim=2)
+        else:
+            key_states = transpose_for_scores(self.k_proj(hidden_states))
+            value_states = transpose_for_scores(self.v_proj(hidden_states))
+
+        query = query_states
+        key = key_states
+        value = value_states
+
+        past_key_value = concat([key, value], dim=0)
+
+        key = key.permute([0, 1, 3, 2])
+        
+        with precision('float32'):
+            attention_scores = matmul(cast(query, 'float32'), cast(key, 'float32'))
+            attention_scores = attention_scores / self.norm_factor
+            attention_probs = softmax(attention_scores, dim=-1)
+
+        context = matmul(attention_probs, value).permute([0, 2, 1, 3])
+        context = context.view(concat([shape(context, 0), shape(context, 1), self.hidden_size]))
+
+        context = self.dense(context)
+
+        context = RaggedTensor.from_row_lengths(context, input_lengths, max_input_length)
+
+        return context, past_key_value
+            
+        
 class SimpleConvTRTLLMNet(Module):
 
     def __init__(self):
         super().__init__()
-        self.encoder = WhisperEncoder()
+        self.attn = WhisperDecoderAttention(512,8,1)
 
-    def forward(self, input_features: RaggedTensor):
+    def forward(self, input_features: RaggedTensor, key_value_states: Tensor, past_key_value: Tensor):
 
-        hidden_states = self.encoder(input_features)
+        context, past_key_value = self.attn(input_features, 
+                                            key_value_states=key_value_states, 
+                                            past_key_value=past_key_value)
 
-        hidden_states.mark_output('output', str_dtype_to_trt('float32'))
+        context = context.data
 
-        return hidden_states
-
+        context.mark_output('output0', str_dtype_to_trt('float32'))
+        past_key_value.mark_output('output1', str_dtype_to_trt('float32'))
+        
+        return context, past_key_value
+        
     def prepare_inputs(self):
 
         input_features_data = Tensor(name='data',
                     dtype=trt.float32,
-                    shape=[1, 80, 3000])
+                    shape=[1, 1, 512])
         input_features_length = Tensor(name='length',
                     dtype=trt.float32,
                     shape=[1])
-
         input_features = RaggedTensor.from_row_lengths(input_features_data, input_features_length)
 
-        return (input_features)
+        # return (input_features)
 
+        key_value_states = Tensor(name='key_value_states',
+                    dtype=trt.float32,
+                    shape=[1, 1500, 512])
+        
+        past_key_value = Tensor(name='past_key_value',
+                    dtype=trt.float32,
+                    shape=[2, 8, 1500, 64])
+
+        return (input_features, key_value_states, past_key_value)
 
 if __name__ == '__main__':
     net = SimpleConvTRTLLMNet()

@@ -423,7 +423,107 @@ class WhisperAttention(nn.Module):
 
         return attn_output, attn_weights_reshaped, past_key_value
 
+class WhisperDecoderAttention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
 
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        is_decoder: bool = False,
+        bias: bool = True,
+    ):
+        super().__init__()
+        
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.head_dim = embed_dim // num_heads
+
+        self.scaling = self.head_dim**-0.5
+        self.is_decoder = is_decoder
+
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+
+    # Copied from transformers.models.bart.modeling_bart.BartAttention._shape with BART->whisper
+    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
+        return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
+
+    # Copied from transformers.models.bart.modeling_bart.BartAttention.forward with BART->whisper
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        key_value_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        layer_head_mask: Optional[torch.Tensor] = None,
+        output_attentions: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        """Input shape: Batch x Time x Channel"""
+
+        is_cross_attention = key_value_states is not None
+
+        bsz, tgt_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states) * self.scaling
+
+        if (
+            is_cross_attention
+            and past_key_value is not None
+            and past_key_value[0].shape[2] == key_value_states.shape[1]
+        ):
+            # reuse k,v, cross_attentions
+            key_states = past_key_value[0]
+            value_states = past_key_value[1]
+            # hidden_states(1,1,512), query_states(1,1,512)->(1,8,1,64)
+            # key_states和value_states都是(1,8,1500,64)
+        elif is_cross_attention:
+            # cross_attentions
+            key_states = self._shape(self.k_proj(key_value_states), -1, bsz)
+            value_states = self._shape(self.v_proj(key_value_states), -1, bsz)
+            # hidden_states(1,1,512), query_states(1,1,512)->(1,8,1,64)
+            # key_value_states(1,1500,512), proj(1,1500,512)->(1,8,1500,64)
+        elif past_key_value is not None:
+            # reuse k, v, self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            key_states = torch.cat([past_key_value[0], key_states], dim=2)
+            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            # hidden_states(1,1,512), query_states(1,1,512)->(1,8,1,64)
+            # proj(1,1,512)->(1,8,1,64)+past(1,8,-1,64)->(1,8,1+-1,64)
+        else:
+            # self_attention
+            key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
+            value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
+            # hidden_states(1,1,512), query_states(1,1,512)->(1,8,1,64)
+            # proj(1,1,512)->(1,8,1,64)
+
+
+        past_key_value = (key_states, value_states)
+
+        proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
+        key_states = key_states.reshape(*proj_shape)
+        value_states = value_states.reshape(*proj_shape)
+
+        attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
+
+        attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+
+        attn_output = torch.bmm(attn_weights, value_states)
+
+        attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output = attn_output.transpose(1, 2)
+
+        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
+
+        attn_output = self.out_proj(attn_output)
+
+        return attn_output, past_key_value
 
 class WhisperEncoderAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -555,7 +655,7 @@ class WhisperDecoderLayer(nn.Module):
         super().__init__()
         self.embed_dim = config.d_model
 
-        self.self_attn = WhisperAttention(
+        self.self_attn = WhisperDecoderAttention(
             embed_dim=self.embed_dim,
             num_heads=config.decoder_attention_heads,
             dropout=config.attention_dropout,
@@ -566,7 +666,7 @@ class WhisperDecoderLayer(nn.Module):
         self.activation_dropout = config.activation_dropout
 
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
-        self.encoder_attn = WhisperAttention(
+        self.encoder_attn = WhisperDecoderAttention(
             self.embed_dim,
             config.decoder_attention_heads,
             dropout=config.attention_dropout,
@@ -614,7 +714,7 @@ class WhisperDecoderLayer(nn.Module):
         # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
         self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
         # add present self-attn cache to positions 1,2 of present_key_value tuple
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             past_key_value=self_attn_past_key_value,
             attention_mask=attention_mask,
@@ -631,7 +731,7 @@ class WhisperDecoderLayer(nn.Module):
 
         # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
         cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
-        hidden_states, cross_attn_weights, cross_attn_present_key_value = self.encoder_attn(
+        hidden_states, cross_attn_present_key_value = self.encoder_attn(
             hidden_states=hidden_states,
             key_value_states=encoder_hidden_states,
             attention_mask=encoder_attention_mask,
