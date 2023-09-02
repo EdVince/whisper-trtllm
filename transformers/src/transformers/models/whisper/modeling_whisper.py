@@ -707,6 +707,10 @@ class WhisperDecoderLayer(nn.Module):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
         """
+
+        if past_key_value is not None:
+            print(hidden_states.shape,encoder_hidden_states.shape,len(past_key_value),[i.shape for i in past_key_value])
+
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
 
@@ -716,15 +720,11 @@ class WhisperDecoderLayer(nn.Module):
         # add present self-attn cache to positions 1,2 of present_key_value tuple
         hidden_states, present_key_value = self.self_attn(
             hidden_states=hidden_states,
+            key_value_states=None,
             past_key_value=self_attn_past_key_value,
-            attention_mask=attention_mask,
-            layer_head_mask=layer_head_mask,
-            output_attentions=output_attentions,
         )
         hidden_states = residual + hidden_states
 
-        # Cross-Attention Block
-        cross_attn_present_key_value = None
         
         residual = hidden_states
         hidden_states = self.encoder_attn_layer_norm(hidden_states)
@@ -734,10 +734,7 @@ class WhisperDecoderLayer(nn.Module):
         hidden_states, cross_attn_present_key_value = self.encoder_attn(
             hidden_states=hidden_states,
             key_value_states=encoder_hidden_states,
-            attention_mask=encoder_attention_mask,
-            layer_head_mask=cross_attn_layer_head_mask,
             past_key_value=cross_attn_past_key_value,
-            output_attentions=output_attentions,
         )
         hidden_states = residual + hidden_states
 

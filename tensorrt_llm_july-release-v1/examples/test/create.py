@@ -140,13 +140,11 @@ class WhisperDecoderAttention(nn.Module):
         self,
         embed_dim: int = 512,
         num_heads: int = 8,
-        dropout: float = 0.0,
         bias: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.dropout = dropout
         self.head_dim = embed_dim // num_heads
 
         self.scaling = self.head_dim**-0.5
@@ -219,29 +217,92 @@ class WhisperDecoderAttention(nn.Module):
 
         return attn_output, past_key_value
 
+class WhisperDecoderLayer(nn.Module):
+    def __init__(self, d_model = 512, decoder_attention_heads = 8, activation_function = 'gelu', decoder_ffn_dim = 2048):
+        super().__init__()
+        self.embed_dim = d_model
+
+        self.self_attn = WhisperDecoderAttention(embed_dim=self.embed_dim,num_heads=decoder_attention_heads)
+        self.activation_fn = ACT2FN[activation_function]
+
+        self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.encoder_attn = WhisperDecoderAttention(self.embed_dim,decoder_attention_heads,)
+        self.encoder_attn_layer_norm = nn.LayerNorm(self.embed_dim)
+        self.fc1 = nn.Linear(self.embed_dim, decoder_ffn_dim)
+        self.fc2 = nn.Linear(decoder_ffn_dim, self.embed_dim)
+        self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor]] = None,
+    ) -> torch.Tensor:
+
+        residual = hidden_states
+        hidden_states = self.self_attn_layer_norm(hidden_states)
+
+        # Self Attention
+        # decoder uni-directional self-attention cached key/values tuple is at positions 1,2
+        self_attn_past_key_value = past_key_value[:2] if past_key_value is not None else None
+        # add present self-attn cache to positions 1,2 of present_key_value tuple
+        hidden_states, present_key_value = self.self_attn(
+            hidden_states=hidden_states,
+            key_value_states=None,
+            past_key_value=self_attn_past_key_value
+        )
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states = self.encoder_attn_layer_norm(hidden_states)
+
+        # cross_attn cached key/values tuple is at positions 3,4 of present_key_value tuple
+        cross_attn_past_key_value = past_key_value[-2:] if past_key_value is not None else None
+        hidden_states, cross_attn_present_key_value = self.encoder_attn(
+            hidden_states=hidden_states,
+            key_value_states=encoder_hidden_states,
+            past_key_value=cross_attn_past_key_value,
+        )
+        hidden_states = residual + hidden_states
+
+        # add cross-attn to positions 3,4 of present_key_value tuple
+        present_key_value = present_key_value + cross_attn_present_key_value
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.final_layer_norm(hidden_states)
+        hidden_states = self.activation_fn(self.fc1(hidden_states))
+        hidden_states = self.fc2(hidden_states)
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        outputs += (present_key_value,)
+
+        return outputs
 
 class SimpleConvTorchNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.attn = WhisperDecoderAttention()
+        self.layer = WhisperDecoderLayer()
 
-    def forward(self, hidden_states, key_value_states, past_key_value):
-        attn_output, past_key_value = self.attn(hidden_states, key_value_states, past_key_value)
-        return attn_output, past_key_value
+    def forward(self, hidden_states,encoder_hidden_states,past_key_value):
+        output = self.layer(hidden_states,encoder_hidden_states,past_key_value)
+        return output
 
 if __name__ == '__main__':
 
     torch_net = SimpleConvTorchNet()
-    torch.save(torch_net.state_dict(),'weight.pth')
+    # torch.save(torch_net.state_dict(),'weight.pth')
 
-    # self
-    out, (k, v) = torch_net(torch.rand(1,1,512),None,None)
-    print(out.shape,k.shape,v.shape) # torch.Size([1, 1, 512]) torch.Size([1, 8, 1, 64]) torch.Size([1, 8, 1, 64])
-    out, (k, v) = torch_net(torch.rand(1,1,512),None,[torch.rand(1,8,19,64),torch.rand(1,8,19,64)])
-    print(out.shape,k.shape,v.shape) # torch.Size([1, 1, 512]) torch.Size([1, 8, 20, 64]) torch.Size([1, 8, 20, 64])
-    
-    # cross
-    out, (k, v) = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
-    print(out.shape,k.shape,v.shape) # torch.Size([1, 1, 512]) torch.Size([1, 8, 1500, 64]) torch.Size([1, 8, 1500, 64])
-    out, (k, v) = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),[torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)])
-    print(out.shape,k.shape,v.shape) # torch.Size([1, 1, 512]) torch.Size([1, 8, 1500, 64]) torch.Size([1, 8, 1500, 64])
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
+
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,23,64),torch.rand(1,8,23,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
+
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,1,64),torch.rand(1,8,1,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
