@@ -150,6 +150,11 @@ TensorRT-LLM是对TensorRT的再封装。它改善了TensorRT模型的手工搭�
   - Additional Notes
     - Provide any additional context here you think might be useful for the TensorRT team to help debug this issue (such as experiments done, potential things to investigate).
 
+1. 实现了支持self/cross以及w/wo cache的WhisperDecoderAttention，WhisperDecoderLayer调用WhisperDecoderAttention两次分别做self attn和cross attn
+2. WhisperDecoderAttention的四种用法单独测试正常，集成到WhisperDecoderLayer里面后，self attn的value cache异常
+3. 代码在"tensorrt_llm_july-release-v1/tensorrt_llm/models/test/model.py"的WhisperDecoderAttention类的forward方法的"elif is_reuse"分支内，正常用法是不用mark output的，但这样出来的是全0，加上mark output是正常的，猜测是fusion有问题
+4. 在"workspace/trt2023/tensorrt_llm_july-release-v1/examples/test/"目录下，先运行create.py得到torch的权重，然后运行build.py生成engine，最后运行run.py对比数据精度
+
 ### 送分题答案（可选）
 
 1. 请在报告中写出 /root/workspace/tensorrt_llm_july-release-v1/examples/gpt/README 里面 “Single node, single GPU” 部分如下命令的输出（10分）[模型为gpt2-medium](https://huggingface.co/gpt2-medium)

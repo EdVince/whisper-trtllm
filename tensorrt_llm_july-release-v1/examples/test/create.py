@@ -293,7 +293,7 @@ class SimpleConvTorchNet(nn.Module):
 if __name__ == '__main__':
 
     torch_net = SimpleConvTorchNet()
-    # torch.save(torch_net.state_dict(),'weight.pth')
+    torch.save(torch_net.state_dict(),'weight.pth')
 
     output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
     print(len(output),output[0].shape,[i.shape for i in output[1]])
