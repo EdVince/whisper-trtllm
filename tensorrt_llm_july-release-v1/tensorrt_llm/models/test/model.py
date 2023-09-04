@@ -296,7 +296,7 @@ class WhisperDecoderAttention(Module):
             past_key_states, past_value_states = split(past_key_value,1,dim=0)
             curr_key_states = transpose_for_scores(self.k_proj(hidden_states))
             curr_value_states = transpose_for_scores(self.v_proj(hidden_states))
-            past_value_states.mark_output('hook0', str_dtype_to_trt('float32'))
+            curr_value_states = identity(curr_value_states)
             key_states = concat([past_key_states, curr_key_states], dim=2)
             value_states = concat([past_value_states, curr_value_states], dim=2)
 
@@ -419,7 +419,7 @@ class SimpleConvTRTLLMNet(Module):
         
         self_attn_past_key_value = Tensor(name='self_attn_past_key_value',
                     dtype=trt.float32,
-                    shape=[2, 8, 23, 64])
+                    shape=[2, 8, 1, 64])
         
         cross_attn_past_key_value = Tensor(name='cross_attn_past_key_value',
                     dtype=trt.float32,

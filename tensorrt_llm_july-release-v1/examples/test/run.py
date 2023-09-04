@@ -42,7 +42,7 @@ if __name__ == '__main__':
         TensorInfo('data',trt.float32,(1,1,512)),
         TensorInfo('length',trt.float32,(1,)),
         TensorInfo('encoder_hidden_states',trt.float32,(1,1500,512)),
-        TensorInfo('self_attn_past_key_value',trt.float32,(2,8,23,64)),
+        TensorInfo('self_attn_past_key_value',trt.float32,(2,8,1,64)),
         TensorInfo('cross_attn_past_key_value',trt.float32,(2,8,1500,64)),
     ]
     outputs_shape = session.infer_shapes(inputs_shape)
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         'data': torch.rand(1,1,512).cuda(),
         'length': torch.Tensor([1.0]).cuda(),
         'encoder_hidden_states': torch.rand(1,1500,512).cuda(),
-        'self_attn_past_key_value': torch.rand(2,8,23,64).cuda(),
+        'self_attn_past_key_value': torch.rand(2,8,1,64).cuda(),
         'cross_attn_past_key_value': torch.rand(2,8,1500,64).cuda(),
     }
     outputs = {}
@@ -78,15 +78,8 @@ if __name__ == '__main__':
     torch_skv = torch.cat([torch_sk,torch_sv],dim=0)
     torch_ckv = torch.cat([torch_ck,torch_cv],dim=0)
 
-    a = trtllm_skv[0].cpu().numpy()
-    b = torch_skv[0].cpu().numpy()
-    diff = np.abs(a-b)
-    print(a.shape,a.min(),a.mean(),a.max(),a.var())
-    print(b.shape,b.min(),b.mean(),b.max(),b.var())
-    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
-
-    a = trtllm_skv[1].cpu().numpy()
-    b = torch_skv[1].cpu().numpy()
+    a = trtllm_out.cpu().numpy()
+    b = torch_out.cpu().numpy()
     diff = np.abs(a-b)
     print(a.shape,a.min(),a.mean(),a.max(),a.var())
     print(b.shape,b.min(),b.mean(),b.max(),b.var())

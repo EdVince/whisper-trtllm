@@ -67,6 +67,7 @@ if __name__ == '__main__':
 
     network = builder.create_network()
     network.trt_network.name = 'SimpleWhisper'
+    network.plugin_config.set_identity_plugin(dtype='float32')
 
     with net_guard(network):
 
