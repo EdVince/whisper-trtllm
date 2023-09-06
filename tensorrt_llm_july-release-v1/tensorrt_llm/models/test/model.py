@@ -2,6 +2,7 @@ import enum
 import math
 from dataclasses import dataclass
 from typing import Optional
+from collections import OrderedDict
 
 import torch
 import numpy as np
@@ -14,7 +15,7 @@ from ...functional import (Tensor, RaggedTensor, ACT2FN,
                            unsqueeze, gelu, shape, gather, 
                            concat, view, permute, constant, 
                            split, matmul, softmax, cast,
-                           identity)
+                           identity, slice)
 from ...layers import Attention, LayerNorm, ColumnLinear, Conv2d
 from ...module import Module, ModuleList
 from ...parameter import Parameter
@@ -259,7 +260,9 @@ class WhisperDecoderAttention(Module):
     def forward(self,
                 hidden_states: RaggedTensor,
                 key_value_states: Optional[RaggedTensor] = None,
-                past_key_value: Optional[Tensor] = None
+                past_key: Optional[Tensor] = None,
+                past_value: Optional[Tensor] = None,
+                cache_mask: Tensor = None,
                 ):
 
         input_lengths = hidden_states.row_lengths
@@ -275,40 +278,38 @@ class WhisperDecoderAttention(Module):
 
         query_states = transpose_for_scores(self.q_proj(hidden_states))
 
-        is_cross_attention = key_value_states is not None
-        is_reuse = past_key_value is not None
-        
-        if is_cross_attention and is_reuse:
-            dumpy_key_value_states = constant(np.zeros((512),dtype=np.float32))
-            key_states = self.k_proj(dumpy_key_value_states)
-            value_states = self.v_proj(dumpy_key_value_states)
-            key_states, value_states = split(past_key_value,1,dim=0)
-        elif is_cross_attention:
-            key_states = transpose_for_scores(self.k_proj(key_value_states))
-            value_states = transpose_for_scores(self.v_proj(key_value_states))
-        elif is_reuse:
-            # curr_key_states = transpose_for_scores(self.k_proj(hidden_states))
-            # curr_value_states = transpose_for_scores(self.v_proj(hidden_states))
-            # past_key_states, past_value_states = split(past_key_value,1,dim=0)
-            # key_states = concat([past_key_states, curr_key_states], dim=2)
-            # value_states = concat([past_value_states, curr_value_states], dim=2)
 
-            past_key_states, past_value_states = split(past_key_value,1,dim=0)
+        if key_value_states is not None:
+            # 用slice来控制是计算还是用past
+            # 计算一下用多少cache和多少current
+            cache_length = shape(cache_mask,0) - 1
+            curr_size = concat([1,1500-cache_length,512])
+            past_size = concat([1,8,cache_length,64])
+            # 按照所需计算current
+            curr_key_states = transpose_for_scores(self.k_proj(slice(key_value_states,[0,0,0],curr_size)))
+            curr_value_states = transpose_for_scores(self.v_proj(slice(key_value_states,[0,0,0],curr_size)))
+            # 取所需cache与所需current拼接
+            key_states = concat([slice(past_key,[0,0,0,0],past_size), curr_key_states],dim=2)
+            value_states = concat([slice(past_value,[0,0,0,0],past_size), curr_value_states],dim=2)
+        else:
+            # 一定要有的部分
             curr_key_states = transpose_for_scores(self.k_proj(hidden_states))
             curr_value_states = transpose_for_scores(self.v_proj(hidden_states))
-            curr_value_states = identity(curr_value_states)
-            key_states = concat([past_key_states, curr_key_states], dim=2)
-            value_states = concat([past_value_states, curr_value_states], dim=2)
+            # 用slice来控制past的多少
+            cache_length = shape(cache_mask,0) - 1
+            past_size = concat([1,8,cache_length,64])
+            key_states = concat([slice(past_key,[0,0,0,0],past_size), curr_key_states], dim=2)
+            value_states = concat([slice(past_value,[0,0,0,0],past_size), curr_value_states], dim=2)
 
-        else:
-            key_states = transpose_for_scores(self.k_proj(hidden_states))
-            value_states = transpose_for_scores(self.v_proj(hidden_states))
+
+
 
         query = query_states
         key = key_states
         value = value_states
-
-        past_key_value = concat([key, value], dim=0)
+        
+        past_key = identity(key)
+        past_value = identity(value)
 
         key = key.permute([0, 1, 3, 2])
         
@@ -324,8 +325,71 @@ class WhisperDecoderAttention(Module):
 
         context = RaggedTensor.from_row_lengths(context, input_lengths, max_input_length)
 
-        return context, past_key_value
+        return context, past_key, past_value
 
+class SimpleConvTRTLLMNet(Module):
+
+    def __init__(self):
+        super().__init__()
+        self.attn = WhisperDecoderAttention(512,8)
+
+    def forward(self, 
+                hidden_states: RaggedTensor, 
+                key_value_states: Tensor, 
+                past_key: Tensor, 
+                past_value: Tensor, 
+                cache_mask: Tensor):
+
+        hidden_states, past_key, past_value = self.attn(
+                hidden_states=hidden_states,
+                key_value_states=None,
+                past_key=past_key,
+                past_value=past_value,
+                cache_mask=cache_mask)
+
+        hidden_states = hidden_states.data
+
+        hidden_states.mark_output('output0', str_dtype_to_trt('float32'))
+        past_key.mark_output('output1', str_dtype_to_trt('float32'))
+        past_value.mark_output('output2', str_dtype_to_trt('float32'))
+        
+        return hidden_states, past_key, past_value
+        
+    def prepare_inputs(self):
+
+        input_features_data = Tensor(name='data',
+                    dtype=trt.float32,
+                    shape=[1, 1, 512],
+                    dim_range=OrderedDict([('batch_size',[1]),('seq_len',[1]),('embed_size',[512])]))
+        input_features_length = Tensor(name='length',
+                    dtype=trt.int32,
+                    shape=[1],
+                    dim_range=OrderedDict([('batch_size',[1])]))
+        input_features = RaggedTensor.from_row_lengths(input_features_data, input_features_length)
+
+        key_value_states = Tensor(name='key_value_states',
+                    dtype=trt.float32,
+                    shape=[1, 1500, 512],
+                    dim_range=OrderedDict([('batch_size',[1]),('cross_seq_len',[1500]),('embed_size',[512])]))
+        
+        past_key = Tensor(name='past_key',
+                    dtype=trt.float32,
+                    shape=[1, 8, 1500, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+        
+        past_value = Tensor(name='past_value',
+                    dtype=trt.float32,
+                    shape=[1, 8, 1500, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+        
+        cache_mask = Tensor(name='cache_mask',
+                    dtype=trt.float32,
+                    shape=[-1],
+                    dim_range=OrderedDict([('cache_length', [[1,1500+1,1500+1]])]))
+        
+        return (input_features, key_value_states, past_key, past_value, cache_mask)
+
+'''
 class WhisperDecoderLayer(Module):
     def __init__(self, d_model=512, decoder_attention_heads=8, activation_function='gelu', decoder_ffn_dim=2048):
         super().__init__()
@@ -426,6 +490,7 @@ class SimpleConvTRTLLMNet(Module):
                     shape=[2, 8, 1500, 64])
         
         return (input_features, encoder_hidden_states, self_attn_past_key_value, cross_attn_past_key_value)
-
+'''
+        
 if __name__ == '__main__':
     net = SimpleConvTRTLLMNet()

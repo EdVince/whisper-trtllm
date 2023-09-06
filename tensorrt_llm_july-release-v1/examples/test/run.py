@@ -12,6 +12,13 @@ from tensorrt_llm.runtime import Session, TensorInfo
 
 from create import SimpleConvTorchNet
 
+_trt_to_torch_dtype_dict = {
+    trt.float16: torch.float16,
+    trt.float32: torch.float32,
+    trt.int32: torch.int32,
+    trt.int8: torch.int8,
+}
+
 @contextlib.contextmanager
 def _scoped_stream():
     '''Create a scoped cuda stream, and synchronize it when the context is destroyed
@@ -40,46 +47,60 @@ if __name__ == '__main__':
     # inference output shape
     inputs_shape = [
         TensorInfo('data',trt.float32,(1,1,512)),
-        TensorInfo('length',trt.float32,(1,)),
-        TensorInfo('encoder_hidden_states',trt.float32,(1,1500,512)),
-        TensorInfo('self_attn_past_key_value',trt.float32,(2,8,1,64)),
-        TensorInfo('cross_attn_past_key_value',trt.float32,(2,8,1500,64)),
+        TensorInfo('length',trt.int32,(1,)),
+        TensorInfo('key_value_states',trt.float32,(1,1500,512)),
+        TensorInfo('past_key',trt.float32,(1,8,1500,64)),
+        TensorInfo('past_value',trt.float32,(1,8,1500,64)),
+        TensorInfo('cache_mask',trt.float32,(1+1500,)),
     ]
     outputs_shape = session.infer_shapes(inputs_shape)
     
     # malloc buffer
     inputs = {
         'data': torch.rand(1,1,512).cuda(),
-        'length': torch.Tensor([1.0]).cuda(),
-        'encoder_hidden_states': torch.rand(1,1500,512).cuda(),
-        'self_attn_past_key_value': torch.rand(2,8,1,64).cuda(),
-        'cross_attn_past_key_value': torch.rand(2,8,1500,64).cuda(),
+        'length': torch.Tensor([1.0]).to(dtype=torch.int32).cuda(),
+        'key_value_states': torch.rand(1,1500,512).cuda(),
+        'past_key': torch.rand(1,8,1500,64).cuda(),
+        'past_value': torch.rand(1,8,1500,64).cuda(),
+        'cache_mask': torch.zeros(1+1500).cuda(),
     }
     outputs = {}
     for output in outputs_shape:
-        outputs[output.name] = torch.zeros(*output.shape).cuda()
+        outputs[output.name] = torch.zeros(*output.shape,dtype=_trt_to_torch_dtype_dict[output.dtype]).cuda()
 
     # execute
     with _scoped_stream() as stream:
         ok = session.run(inputs, outputs, stream)
     torch.cuda.synchronize()
-    trtllm_out = outputs['output0']
-    trtllm_skv = outputs['output1']
-    trtllm_ckv = outputs['output2']
-    # print(trtllm_out.shape,trtllm_skv.shape,trtllm_ckv.shape)
+
+    trtllm_o = outputs['output0']
+    trtllm_k = outputs['output1']
+    trtllm_v = outputs['output2']
+
 
     torch_net = SimpleConvTorchNet()
     torch_net.load_state_dict(torch.load('weight.pth',map_location='cpu'))
     torch_net.cuda()
     with torch.inference_mode():
-        torch_out, (torch_sk, torch_sv, torch_ck, torch_cv) = torch_net(inputs['data'],inputs['encoder_hidden_states'],
-                                                                        (inputs['self_attn_past_key_value'][0:1],inputs['self_attn_past_key_value'][1:2],
-                                                                         inputs['cross_attn_past_key_value'][0:1],inputs['cross_attn_past_key_value'][1:2]))
-    torch_skv = torch.cat([torch_sk,torch_sv],dim=0)
-    torch_ckv = torch.cat([torch_ck,torch_cv],dim=0)
+        torch_o, (torch_k, torch_v) = torch_net(inputs['data'],None,
+                                                (inputs['past_key'],inputs['past_value']))
 
-    a = trtllm_out.cpu().numpy()
-    b = torch_out.cpu().numpy()
+    a = trtllm_o.cpu().numpy()
+    b = torch_o.cpu().numpy()
+    diff = np.abs(a-b)
+    print(a.shape,a.min(),a.mean(),a.max(),a.var())
+    print(b.shape,b.min(),b.mean(),b.max(),b.var())
+    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
+    
+    a = trtllm_k.cpu().numpy()
+    b = torch_k.cpu().numpy()
+    diff = np.abs(a-b)
+    print(a.shape,a.min(),a.mean(),a.max(),a.var())
+    print(b.shape,b.min(),b.mean(),b.max(),b.var())
+    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
+    
+    a = trtllm_v.cpu().numpy()
+    b = torch_v.cpu().numpy()
     diff = np.abs(a-b)
     print(a.shape,a.min(),a.mean(),a.max(),a.var())
     print(b.shape,b.min(),b.mean(),b.max(),b.var())

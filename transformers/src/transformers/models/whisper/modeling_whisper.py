@@ -707,10 +707,6 @@ class WhisperDecoderLayer(nn.Module):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
         """
-
-        if past_key_value is not None:
-            print(hidden_states.shape,encoder_hidden_states.shape,len(past_key_value),[i.shape for i in past_key_value])
-
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
 
@@ -1073,13 +1069,13 @@ class WhisperDecoder(WhisperPreTrainedModel):
 
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        encoder_hidden_states=None,
+        input_ids=None, # (1,1)
+        attention_mask=None, # None
+        encoder_hidden_states=None, # (1,1500,512)
         head_mask=None,
         cross_attn_head_mask=None,
-        past_key_values=None,
-        inputs_embeds=None,
+        past_key_values=None, # 只有第一次是None，这个很麻烦，不好弄
+        inputs_embeds=None, # None
         use_cache=None,
         output_attentions=None,
         output_hidden_states=None,
@@ -1165,15 +1161,17 @@ class WhisperDecoder(WhisperPreTrainedModel):
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx] if past_key_values is not None else None
 
+            print(past_key_value is None)
+
             layer_outputs = decoder_layer(
                 hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=None,
                 encoder_hidden_states=encoder_hidden_states,
                 layer_head_mask=None,
                 cross_attn_layer_head_mask=None,
                 past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
+                output_attentions=False,
+                use_cache=True,
             )
             hidden_states = layer_outputs[0]
             next_decoder_cache += (layer_outputs[1],)

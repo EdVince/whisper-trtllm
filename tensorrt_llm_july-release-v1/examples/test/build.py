@@ -17,9 +17,9 @@ def serialize_engine(engine, path):
 
 if __name__ == '__main__':
 
-    logger.set_level('info')
+    logger.set_level('verbose')
     torch.cuda.set_device(0)
-    tensorrt_llm.logger.set_level('info')
+    tensorrt_llm.logger.set_level('verbose')
 
     # create builder
     builder = Builder()
@@ -37,9 +37,17 @@ if __name__ == '__main__':
     tensorrt_llm_test = tensorrt_llm.models.SimpleConvTRTLLMNet()
 
     ckpt = torch.load('weight.pth',map_location='cpu')
-
+    tensorrt_llm_test.attn.q_proj.weight.value = ckpt['attn.q_proj.weight'].numpy()
+    tensorrt_llm_test.attn.q_proj.bias.value = ckpt['attn.q_proj.bias'].numpy()
+    tensorrt_llm_test.attn.k_proj.weight.value = ckpt['attn.k_proj.weight'].numpy()
+    tensorrt_llm_test.attn.v_proj.weight.value = ckpt['attn.v_proj.weight'].numpy()
+    tensorrt_llm_test.attn.v_proj.bias.value = ckpt['attn.v_proj.bias'].numpy()
+    tensorrt_llm_test.attn.dense.weight.value = ckpt['attn.out_proj.weight'].numpy()
+    tensorrt_llm_test.attn.dense.bias.value = ckpt['attn.out_proj.bias'].numpy()
+    
+    '''
+    ckpt = torch.load('weight.pth',map_location='cpu')
     print(ckpt.keys())
-
     tensorrt_llm_test.layer.self_attn.q_proj.weight.value = ckpt['layer.self_attn.q_proj.weight'].numpy()
     tensorrt_llm_test.layer.self_attn.q_proj.bias.value = ckpt['layer.self_attn.q_proj.bias'].numpy()
     tensorrt_llm_test.layer.self_attn.k_proj.weight.value = ckpt['layer.self_attn.k_proj.weight'].numpy()
@@ -64,7 +72,8 @@ if __name__ == '__main__':
     tensorrt_llm_test.layer.fc2.bias.value = ckpt['layer.fc2.bias'].numpy()
     tensorrt_llm_test.layer.final_layer_norm.weight.value = ckpt['layer.final_layer_norm.weight'].numpy()
     tensorrt_llm_test.layer.final_layer_norm.bias.value = ckpt['layer.final_layer_norm.bias'].numpy()
-
+    '''
+    
     network = builder.create_network()
     network.trt_network.name = 'SimpleWhisper'
     network.plugin_config.set_identity_plugin(dtype='float32')
