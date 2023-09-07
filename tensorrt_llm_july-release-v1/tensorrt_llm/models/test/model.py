@@ -14,7 +14,7 @@ from ..._utils import str_dtype_to_trt
 from ...functional import (Tensor, RaggedTensor, ACT2FN, 
                            unsqueeze, gelu, shape, gather, 
                            concat, view, permute, constant, 
-                           split, matmul, softmax, cast,
+                           elementwise_binary, matmul, softmax, cast,
                            identity, slice)
 from ...layers import Attention, LayerNorm, ColumnLinear, Conv2d
 from ...module import Module, ModuleList
@@ -279,7 +279,7 @@ class WhisperDecoderAttention(Module):
         query_states = transpose_for_scores(self.q_proj(hidden_states))
 
 
-        if key_value_states is not None:
+        if key_value_states is not None: # cross attention
             # 用slice来控制是计算还是用past
             # 计算一下用多少cache和多少current
             cache_length = shape(cache_mask,0) - 1
@@ -291,18 +291,15 @@ class WhisperDecoderAttention(Module):
             # 取所需cache与所需current拼接
             key_states = concat([slice(past_key,[0,0,0,0],past_size), curr_key_states],dim=2)
             value_states = concat([slice(past_value,[0,0,0,0],past_size), curr_value_states],dim=2)
-        else:
+        else: # self attention
             # 一定要有的部分
             curr_key_states = transpose_for_scores(self.k_proj(hidden_states))
             curr_value_states = transpose_for_scores(self.v_proj(hidden_states))
             # 用slice来控制past的多少
-            cache_length = shape(cache_mask,0) - 1
+            cache_length = elementwise_binary(shape(cache_mask,0) - 1, shape(past_key,2), trt.ElementWiseOperation.MIN)
             past_size = concat([1,8,cache_length,64])
             key_states = concat([slice(past_key,[0,0,0,0],past_size), curr_key_states], dim=2)
             value_states = concat([slice(past_value,[0,0,0,0],past_size), curr_value_states], dim=2)
-
-
-
 
         query = query_states
         key = key_states
@@ -327,6 +324,7 @@ class WhisperDecoderAttention(Module):
 
         return context, past_key, past_value
 
+'''
 class SimpleConvTRTLLMNet(Module):
 
     def __init__(self):
@@ -342,7 +340,7 @@ class SimpleConvTRTLLMNet(Module):
 
         hidden_states, past_key, past_value = self.attn(
                 hidden_states=hidden_states,
-                key_value_states=None,
+                key_value_states=key_value_states,
                 past_key=past_key,
                 past_value=past_value,
                 cache_mask=cache_mask)
@@ -388,8 +386,9 @@ class SimpleConvTRTLLMNet(Module):
                     dim_range=OrderedDict([('cache_length', [[1,1500+1,1500+1]])]))
         
         return (input_features, key_value_states, past_key, past_value, cache_mask)
-
 '''
+
+
 class WhisperDecoderLayer(Module):
     def __init__(self, d_model=512, decoder_attention_heads=8, activation_function='gelu', decoder_ffn_dim=2048):
         super().__init__()
@@ -408,8 +407,12 @@ class WhisperDecoderLayer(Module):
     def forward(self,
         hidden_states: RaggedTensor,
         encoder_hidden_states: Optional[Tensor] = None,
-        self_attn_past_key_value: Optional[Tensor] = None,
-        cross_attn_past_key_value: Optional[Tensor] = None,
+        self_past_key: Optional[Tensor] = None,
+        self_past_value: Optional[Tensor] = None,
+        self_cache_mask: Optional[Tensor] = None,
+        cross_past_key: Optional[Tensor] = None,
+        cross_past_value: Optional[Tensor] = None,
+        cross_cache_mask: Optional[Tensor] = None,
     ):
 
         input_lengths = hidden_states.row_lengths
@@ -420,10 +423,12 @@ class WhisperDecoderLayer(Module):
         hidden_states = self.self_attn_layer_norm(hidden_states)
 
         # Self Attention
-        hidden_states, present_key_value = self.self_attn(
+        hidden_states, present_key, present_value = self.self_attn(
             hidden_states=RaggedTensor.from_row_lengths(hidden_states, input_lengths, max_input_length),
             key_value_states=None,
-            past_key_value=self_attn_past_key_value
+            past_key=self_past_key,
+            past_value=self_past_value,
+            cache_mask=self_cache_mask,
         )
         hidden_states = residual + hidden_states.data
 
@@ -431,10 +436,12 @@ class WhisperDecoderLayer(Module):
         hidden_states = self.encoder_attn_layer_norm(hidden_states)
 
         # Cross Attention
-        hidden_states, cross_attn_present_key_value = self.encoder_attn(
+        hidden_states, cross_attn_present_key, cross_attn_present_value = self.encoder_attn(
             hidden_states=RaggedTensor.from_row_lengths(hidden_states, input_lengths, max_input_length),
             key_value_states=encoder_hidden_states,
-            past_key_value=cross_attn_past_key_value,
+            past_key=cross_past_key,
+            past_value=cross_past_value,
+            cache_mask=cross_cache_mask,
         )
         hidden_states = residual + hidden_states.data
 
@@ -445,7 +452,7 @@ class WhisperDecoderLayer(Module):
         hidden_states = self.fc2(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states, present_key_value, cross_attn_present_key_value
+        return hidden_states, present_key, present_value, cross_attn_present_key, cross_attn_present_value
 
 
 class SimpleConvTRTLLMNet(Module):
@@ -454,43 +461,81 @@ class SimpleConvTRTLLMNet(Module):
         super().__init__()
         self.layer = WhisperDecoderLayer()
 
-    def forward(self, hidden_states: RaggedTensor, encoder_hidden_states: Tensor, self_attn_past_key_value: Tensor, cross_attn_past_key_value: Tensor):
+    def forward(self, 
+                hidden_states: RaggedTensor, 
+                encoder_hidden_states: Tensor, 
+                self_past_key: Tensor,
+                self_past_value: Tensor,
+                self_cache_mask: Tensor,
+                cross_past_key: Tensor,
+                cross_past_value: Tensor,
+                cross_cache_mask: Tensor,
+        ):
 
-        hidden_states, present_key_value, cross_attn_present_key_value = self.layer(hidden_states=hidden_states, 
-                                    encoder_hidden_states=encoder_hidden_states,
-                                    self_attn_past_key_value=self_attn_past_key_value,
-                                    cross_attn_past_key_value=cross_attn_past_key_value)
+        hidden_states, present_key, present_value, cross_attn_present_key, cross_attn_present_value = self.layer(
+                                                                                    hidden_states=hidden_states,
+                                                                                    encoder_hidden_states=encoder_hidden_states,
+                                                                                    self_past_key=self_past_key,
+                                                                                    self_past_value=self_past_value,
+                                                                                    self_cache_mask=self_cache_mask,
+                                                                                    cross_past_key=cross_past_key,
+                                                                                    cross_past_value=cross_past_value,
+                                                                                    cross_cache_mask=cross_cache_mask,
+        )
 
         hidden_states.mark_output('output0', str_dtype_to_trt('float32'))
-        present_key_value.mark_output('output1', str_dtype_to_trt('float32'))
-        cross_attn_present_key_value.mark_output('output2', str_dtype_to_trt('float32'))
+        present_key.mark_output('output1', str_dtype_to_trt('float32'))
+        present_value.mark_output('output2', str_dtype_to_trt('float32'))
+        cross_attn_present_key.mark_output('output3', str_dtype_to_trt('float32'))
+        cross_attn_present_value.mark_output('output4', str_dtype_to_trt('float32'))
         
-        return hidden_states
+        return hidden_states, present_key, present_value, cross_attn_present_key, cross_attn_present_value
         
     def prepare_inputs(self):
 
         input_features_data = Tensor(name='data',
                     dtype=trt.float32,
-                    shape=[1, 1, 512])
+                    shape=[1, 1, 512],
+                    dim_range=OrderedDict([('batch_size',[1]),('seq_len',[1]),('embed_size',[512])]))
         input_features_length = Tensor(name='length',
-                    dtype=trt.float32,
-                    shape=[1])
+                    dtype=trt.int32,
+                    shape=[1],
+                    dim_range=OrderedDict([('batch_size',[1])]))
         input_features = RaggedTensor.from_row_lengths(input_features_data, input_features_length)
 
         encoder_hidden_states = Tensor(name='encoder_hidden_states',
                     dtype=trt.float32,
-                    shape=[1, 1500, 512])
+                    shape=[1, 1500, 512],
+                    dim_range=OrderedDict([('batch_size',[1]),('cross_seq_len',[1500]),('embed_size',[512])]))
         
-        self_attn_past_key_value = Tensor(name='self_attn_past_key_value',
+        self_past_key = Tensor(name='self_past_key',
                     dtype=trt.float32,
-                    shape=[2, 8, 1, 64])
-        
-        cross_attn_past_key_value = Tensor(name='cross_attn_past_key_value',
+                    shape=[1, 8, -1, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[[1,1,1500+1]]),('embed_per_head',[64])]))
+        self_past_value = Tensor(name='self_past_value',
                     dtype=trt.float32,
-                    shape=[2, 8, 1500, 64])
+                    shape=[1, 8, -1, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[[1,1,1500+1]]),('embed_per_head',[64])]))
+        self_cache_mask = Tensor(name='self_cache_mask',
+                    dtype=trt.float32,
+                    shape=[-1],
+                    dim_range=OrderedDict([('cache_length', [[1,1500+1,1500+1]])]))
         
-        return (input_features, encoder_hidden_states, self_attn_past_key_value, cross_attn_past_key_value)
-'''
+        cross_past_key = Tensor(name='cross_past_key',
+                    dtype=trt.float32,
+                    shape=[1, 8, 1500, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+        cross_past_value = Tensor(name='cross_past_value',
+                    dtype=trt.float32,
+                    shape=[1, 8, 1500, 64],
+                    dim_range=OrderedDict([('batch_size',[1]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+        cross_cache_mask = Tensor(name='cross_cache_mask',
+                    dtype=trt.float32,
+                    shape=[-1],
+                    dim_range=OrderedDict([('cache_length', [[1,1500+1,1500+1]])]))
+        
+        return (input_features, encoder_hidden_states, self_past_key, self_past_value, self_cache_mask, cross_past_key, cross_past_value, cross_cache_mask)
+
         
 if __name__ == '__main__':
     net = SimpleConvTRTLLMNet()

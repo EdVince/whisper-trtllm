@@ -284,19 +284,25 @@ class WhisperDecoderLayer(nn.Module):
 class SimpleConvTorchNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.attn = WhisperDecoderAttention()
+        self.layer = WhisperDecoderLayer()
 
-    def forward(self, hidden_states,key_value_states,past_key_value):
-        attn_output, past_key_value = self.attn(hidden_states,key_value_states,past_key_value)
-        return attn_output, past_key_value
+    def forward(self, hidden_states,encoder_hidden_states,past_key_value):
+        output = self.layer(hidden_states,encoder_hidden_states,past_key_value)
+        return output
 
 if __name__ == '__main__':
 
     torch_net = SimpleConvTorchNet()
     torch.save(torch_net.state_dict(),'weight.pth')
-    
-    attn, past = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
-    print(attn.shape,past[0].shape,past[1].shape)
-    
-    attn, past = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
-    print(attn.shape,past[0].shape,past[1].shape)
+
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
+
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,23,64),torch.rand(1,8,23,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
+
+    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,1,64),torch.rand(1,8,1,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
+    print(len(output),output[0].shape,[i.shape for i in output[1]])
+    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
