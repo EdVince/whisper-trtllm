@@ -41,7 +41,7 @@ def _scoped_stream():
 
 if __name__ == '__main__':
 
-    tensorrt_llm.logger.set_level('verbose')
+    tensorrt_llm.logger.set_level('info')
     runtime_rank = tensorrt_llm.mpi_rank()
     runtime_mapping = tensorrt_llm.Mapping(1, 0)
     torch.cuda.set_device(0)
@@ -52,19 +52,20 @@ if __name__ == '__main__':
     session = Session.from_serialized_engine(engine_buffer)
 
     inputs = {
-        'data': torch.rand(1,1,512).cuda(),
+        'data': torch.Tensor([[50257]]).to(dtype=torch.int32).cuda(),
         'length': torch.Tensor([1.0]).to(dtype=torch.int32).cuda(),
         'encoder_hidden_states': torch.rand(1,1500,512).cuda(),
-        'self_past_key': torch.rand(1,8,23,64).cuda(),
-        'self_past_value': torch.rand(1,8,23,64).cuda(),
-        'self_cache_mask': torch.zeros(1+23).cuda(),
-        'cross_past_key': torch.rand(1,8,1500,64).cuda(),
-        'cross_past_value': torch.rand(1,8,1500,64).cuda(),
-        'cross_cache_mask': torch.zeros(1+1500).cuda(),
+        'self_past_key': torch.rand(6,8,23,64).cuda(),
+        'self_past_value': torch.rand(6,8,23,64).cuda(),
+        'cross_past_key': torch.rand(6,8,1500,64).cuda(),
+        'cross_past_value': torch.rand(6,8,1500,64).cuda(),
+        'past_self_cache_mask': torch.rand(1,).cuda(),
+        'past_cross_cache_mask': torch.rand(1,).cuda(),
     }
 
     # inference output shape
     inputs_shape = [TensorInfo(k,_torch_to_trt_dtype_dict[v.dtype],tuple(v.shape)) for k,v in inputs.items()]
+    print(inputs_shape)
     outputs_shape = session.infer_shapes(inputs_shape)
     
     # malloc buffer
@@ -77,19 +78,24 @@ if __name__ == '__main__':
         ok = session.run(inputs, outputs, stream)
     torch.cuda.synchronize()
 
-    trtllm_o = outputs['output0']
-    trtllm_sk = outputs['output1']
-    trtllm_sv = outputs['output2']
-    trtllm_ck = outputs['output3']
-    trtllm_cv = outputs['output4']
+    trtllm_o = outputs['output']
+
 
 
     torch_net = SimpleConvTorchNet()
     torch_net.load_state_dict(torch.load('weight.pth',map_location='cpu'))
     torch_net.cuda()
     with torch.inference_mode():
-        torch_o, (torch_sk, torch_sv, torch_ck, torch_cv) = torch_net(inputs['data'],inputs['encoder_hidden_states'],
-                    (inputs['self_past_key'],inputs['self_past_value'],inputs['cross_past_key'],inputs['cross_past_value']))
+        torch_o, cache = torch_net(inputs['data'],inputs['encoder_hidden_states'],
+                            None)
+                    # ((inputs['self_past_key'][0:1],inputs['self_past_value'][0:1],inputs['cross_past_key'][0:1],inputs['cross_past_value'][0:1]),
+                    # (inputs['self_past_key'][1:2],inputs['self_past_value'][1:2],inputs['cross_past_key'][1:2],inputs['cross_past_value'][1:2]),
+                    # (inputs['self_past_key'][2:3],inputs['self_past_value'][2:3],inputs['cross_past_key'][2:3],inputs['cross_past_value'][2:3]),
+                    # (inputs['self_past_key'][3:4],inputs['self_past_value'][3:4],inputs['cross_past_key'][3:4],inputs['cross_past_value'][3:4]),
+                    # (inputs['self_past_key'][4:5],inputs['self_past_value'][4:5],inputs['cross_past_key'][4:5],inputs['cross_past_value'][4:5]),
+                    # (inputs['self_past_key'][5:6],inputs['self_past_value'][5:6],inputs['cross_past_key'][5:6],inputs['cross_past_value'][5:6])))
+
+    cache = [torch.cat([cache[j][i] for j in range(6)],dim=0) for i in range(4)]
 
     a = trtllm_o.cpu().numpy()
     b = torch_o.cpu().numpy()
@@ -97,15 +103,12 @@ if __name__ == '__main__':
     print(a.shape,a.min(),a.mean(),a.max(),a.var())
     print(b.shape,b.min(),b.mean(),b.max(),b.var())
     print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
-    
-    diff = np.abs(trtllm_sk.cpu().numpy()-torch_sk.cpu().numpy())
-    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
-    
-    diff = np.abs(trtllm_sv.cpu().numpy()-torch_sv.cpu().numpy())
-    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
 
-    diff = np.abs(trtllm_ck.cpu().numpy()-torch_ck.cpu().numpy())
+    diff = np.abs(outputs['output0'].cpu().numpy()-cache[0].cpu().numpy())
     print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
-    
-    diff = np.abs(trtllm_cv.cpu().numpy()-torch_cv.cpu().numpy())
+    diff = np.abs(outputs['output1'].cpu().numpy()-cache[1].cpu().numpy())
+    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
+    diff = np.abs(outputs['output2'].cpu().numpy()-cache[2].cpu().numpy())
+    print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())
+    diff = np.abs(outputs['output3'].cpu().numpy()-cache[3].cpu().numpy())
     print(diff.shape,diff.min(),diff.mean(),diff.max(),diff.var())

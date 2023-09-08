@@ -1161,8 +1161,6 @@ class WhisperDecoder(WhisperPreTrainedModel):
         for idx, decoder_layer in enumerate(self.layers):
             past_key_value = past_key_values[idx] if past_key_values is not None else None
 
-            print(past_key_value is None)
-
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=None,

@@ -281,13 +281,81 @@ class WhisperDecoderLayer(nn.Module):
 
         return outputs
 
+class WhisperPositionalEmbedding(nn.Embedding):
+    def __init__(self, num_positions: int, embedding_dim: int, padding_idx: Optional[int] = None):
+        super().__init__(num_positions, embedding_dim)
+
+    def forward(self, input_ids, past_key_values_length=0):
+        return self.weight[past_key_values_length : past_key_values_length + input_ids.shape[1]]
+
+class WhisperDecoder(nn.Module):
+    def __init__(self,
+                 pad_token_id=50256,
+                 max_target_positions=448,
+                 max_source_positions=1500,
+                 d_model=512,
+                 scale_embedding=False,
+                 vocab_size=51864,
+                 decoder_layers=6,
+                 decoder_attention_heads=8,
+                 activation_function='gelu',
+                 decoder_ffn_dim=2048,):
+        super().__init__()
+        
+        self.padding_idx = pad_token_id
+        self.max_target_positions = max_target_positions
+        self.max_source_positions = max_source_positions
+        self.embed_scale = math.sqrt(d_model) if scale_embedding else 1.0
+
+        self.embed_tokens = nn.Embedding(vocab_size, d_model, self.padding_idx)
+        self.embed_positions = WhisperPositionalEmbedding(self.max_target_positions, d_model)
+
+        self.layers = nn.ModuleList([WhisperDecoderLayer(d_model=d_model,
+                                                         decoder_attention_heads=decoder_attention_heads, 
+                                                         activation_function=activation_function, 
+                                                         decoder_ffn_dim=decoder_ffn_dim) for _ in range(decoder_layers)])
+
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        input_ids=None, # (1,1)
+        encoder_hidden_states=None, # (1,1500,512)
+        past_key_values=None, # 只有第一次是None，这个很麻烦，不好弄
+    ):
+        # retrieve input_ids and inputs_embeds
+        input_shape = input_ids.size()
+        input_ids = input_ids.view(-1, input_shape[-1])
+
+        # past_key_values_length
+        past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
+
+        inputs_embeds = self.embed_tokens(input_ids)
+        positions = self.embed_positions(input_ids, past_key_values_length=past_key_values_length)
+        hidden_states = inputs_embeds + positions
+
+        # decoder layers
+        next_decoder_cache = ()
+        for idx, decoder_layer in enumerate(self.layers):
+            past_key_value = past_key_values[idx] if past_key_values is not None else None
+
+            layer_outputs = decoder_layer(hidden_states,encoder_hidden_states,past_key_value)
+            
+            hidden_states = layer_outputs[0]
+            next_decoder_cache += (layer_outputs[1],)
+
+        hidden_states = self.layer_norm(hidden_states)
+
+        return hidden_states, next_decoder_cache
+
+
 class SimpleConvTorchNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer = WhisperDecoderLayer()
+        self.decoder = WhisperDecoder()
 
-    def forward(self, hidden_states,encoder_hidden_states,past_key_value):
-        output = self.layer(hidden_states,encoder_hidden_states,past_key_value)
+    def forward(self, input_ids,encoder_hidden_states,past_key_values):
+        output = self.decoder(input_ids,encoder_hidden_states,past_key_values)
         return output
 
 if __name__ == '__main__':
@@ -295,14 +363,32 @@ if __name__ == '__main__':
     torch_net = SimpleConvTorchNet()
     torch.save(torch_net.state_dict(),'weight.pth')
 
-    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),None)
-    print(len(output),output[0].shape,[i.shape for i in output[1]])
-    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
-
-    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,23,64),torch.rand(1,8,23,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
-    print(len(output),output[0].shape,[i.shape for i in output[1]])
-    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 24, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
-
-    output = torch_net(torch.rand(1,1,512),torch.rand(1,1500,512),(torch.rand(1,8,1,64),torch.rand(1,8,1,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)))
-    print(len(output),output[0].shape,[i.shape for i in output[1]])
-    # 2 torch.Size([1, 1, 512]) [torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 2, 64]), torch.Size([1, 8, 1500, 64]), torch.Size([1, 8, 1500, 64])]
+    output = torch_net(torch.Tensor([[50257]]).to(dtype=torch.int32),torch.rand(1,1500,512),None)
+    print(tuple(output[0].shape))
+    for i in range(6):
+        print([tuple(j.shape) for j in output[1][i]])
+    # (1, 1, 512)
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 1, 64), (1, 8, 1, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    
+    output = torch_net(torch.Tensor([[50257]]).to(dtype=torch.int32),torch.rand(1,1500,512),
+                    ((torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)),
+                    (torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)),
+                    (torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)),
+                    (torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)),
+                    (torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64)),
+                    (torch.rand(1,8,11,64),torch.rand(1,8,11,64),torch.rand(1,8,1500,64),torch.rand(1,8,1500,64))))
+    print(tuple(output[0].shape))
+    for i in range(6):
+        print([tuple(j.shape) for j in output[1][i]])
+    # (1, 1, 512)
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
+    # [(1, 8, 12, 64), (1, 8, 12, 64), (1, 8, 1500, 64), (1, 8, 1500, 64)]
