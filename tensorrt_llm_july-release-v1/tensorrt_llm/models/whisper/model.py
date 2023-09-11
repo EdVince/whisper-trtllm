@@ -153,8 +153,8 @@ class InflightBatchingParam:
 class WhisperDecoderAttention(Module):
 
     def __init__(self,
-                 hidden_size,
-                 num_attention_heads,
+                 hidden_size=512,
+                 num_attention_heads=8,
                  max_position_embeddings=0,
                  num_layers=1,
                  apply_query_key_layer_scaling=False,
@@ -262,8 +262,8 @@ class WhisperDecoderAttention(Module):
             # 用slice来控制是计算还是用past
             # 计算一下用多少cache和多少current
             cache_length = shape(cache_mask,0) - 1
-            curr_size = concat([1,1500-cache_length,512])
-            past_size = concat([1,8,cache_length,64])
+            curr_size = concat([1,1500-cache_length,self.hidden_size])
+            past_size = concat([1,self.num_attention_heads,cache_length,self.attention_head_size])
             # 按照所需计算current
             curr_key_states = transpose_for_scores(self.k_proj(slice(key_value_states,[0,0,0],curr_size)))
             curr_value_states = transpose_for_scores(self.v_proj(slice(key_value_states,[0,0,0],curr_size)))
@@ -276,7 +276,7 @@ class WhisperDecoderAttention(Module):
             curr_value_states = transpose_for_scores(self.v_proj(hidden_states))
             # 用slice来控制past的多少
             cache_length = elementwise_binary(shape(cache_mask,0) - 1, shape(past_key,2), trt.ElementWiseOperation.MIN)
-            past_size = concat([1,8,cache_length,64])
+            past_size = concat([1,self.num_attention_heads,cache_length,self.attention_head_size])
             key_states = concat([slice(past_key,[0,0,0,0],past_size), curr_key_states], dim=2)
             value_states = concat([slice(past_value,[0,0,0,0],past_size), curr_value_states], dim=2)
 
@@ -385,8 +385,11 @@ class WhisperDecoder(Module):
         self.padding_idx = pad_token_id
         self.max_target_positions = max_target_positions
         self.max_source_positions = max_source_positions
+        self.d_model = d_model
         self.embed_scale = math.sqrt(d_model) if scale_embedding else 1.0
         self.decoder_layers = decoder_layers
+        self.decoder_attention_heads = decoder_attention_heads
+        self.d_head = d_model // decoder_attention_heads
 
         self.embed_tokens = Embedding(vocab_size, d_model)
         self.embed_positions = Embedding(self.max_target_positions, d_model)
@@ -418,11 +421,11 @@ class WhisperDecoder(Module):
         input_ids = input_ids.data
 
         inputs_embeds = self.embed_tokens(input_ids)        
-        position = unsqueeze(slice(self.embed_positions.weight.value,concat([shape(past_self_cache_mask,0)-1,0]),concat([shape(input_ids,1),512])),0)
+        position = unsqueeze(slice(self.embed_positions.weight.value,concat([shape(past_self_cache_mask,0)-1,0]),concat([shape(input_ids,1),self.d_model])),0)
         hidden_states = inputs_embeds + position
         
         self_len = shape(past_self_keys,2)
-        self_size = concat([1,8,self_len,64])
+        self_size = concat([1,self.decoder_attention_heads,self_len,self.d_head])
         next_self_keys = []
         next_self_values = []
         next_cross_keys = []
@@ -430,8 +433,8 @@ class WhisperDecoder(Module):
         for idx in range(self.decoder_layers):
             past_self_key = slice(past_self_keys,[idx,0,0,0],self_size)
             past_self_value = slice(past_self_values,[idx,0,0,0],self_size)
-            past_cross_key = slice(past_cross_keys,[idx,0,0,0],[1,8,1500,64])
-            past_cross_value = slice(past_cross_values,[idx,0,0,0],[1,8,1500,64])
+            past_cross_key = slice(past_cross_keys,[idx,0,0,0],[1,self.decoder_attention_heads,self.max_source_positions,self.d_head])
+            past_cross_value = slice(past_cross_values,[idx,0,0,0],[1,self.decoder_attention_heads,self.max_source_positions,self.d_head])
         
             hidden_states, next_self_key, next_self_value, next_cross_key, next_cross_value = self.layers[idx](
                 hidden_states=RaggedTensor.from_row_lengths(hidden_states, input_lengths, max_input_length),
@@ -480,34 +483,34 @@ class WhisperDecoder(Module):
 
         encoder_hidden_states = Tensor(name='encoder_hidden_states',
                     dtype=trt.float32,
-                    shape=[1, 1500, 512],
-                    dim_range=OrderedDict([('batch_size',[1]),('cross_seq_len',[1500]),('embed_size',[512])]))
+                    shape=[1, self.max_source_positions, self.d_model],
+                    dim_range=OrderedDict([('batch_size',[1]),('cross_seq_len',[self.max_source_positions]),('embed_size',[self.d_model])]))
         
         self_past_key = Tensor(name='self_past_key',
                     dtype=trt.float32,
-                    shape=[6, 8, -1, 64],
-                    dim_range=OrderedDict([('num_layers',[6]),('num_head',[8]),('kv_seq_len',[[1,1,448+1]]),('embed_per_head',[64])]))
+                    shape=[self.decoder_layers, self.decoder_attention_heads, -1, self.d_head],
+                    dim_range=OrderedDict([('num_layers',[self.decoder_layers]),('num_head',[self.decoder_attention_heads]),('kv_seq_len',[[1,1,self.max_target_positions+1]]),('embed_per_head',[self.d_head])]))
         self_past_value = Tensor(name='self_past_value',
                     dtype=trt.float32,
-                    shape=[6, 8, -1, 64],
-                    dim_range=OrderedDict([('num_layers',[6]),('num_head',[8]),('kv_seq_len',[[1,1,448+1]]),('embed_per_head',[64])]))
+                    shape=[self.decoder_layers, self.decoder_attention_heads, -1, self.d_head],
+                    dim_range=OrderedDict([('num_layers',[self.decoder_layers]),('num_head',[self.decoder_attention_heads]),('kv_seq_len',[[1,1,self.max_target_positions+1]]),('embed_per_head',[self.d_head])]))
         cross_past_key = Tensor(name='cross_past_key',
                     dtype=trt.float32,
-                    shape=[6, 8, 1500, 64],
-                    dim_range=OrderedDict([('num_layers',[6]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+                    shape=[self.decoder_layers, self.decoder_attention_heads, self.max_source_positions, self.d_head],
+                    dim_range=OrderedDict([('num_layers',[self.decoder_layers]),('num_head',[self.decoder_attention_heads]),('kv_seq_len',[self.max_source_positions]),('embed_per_head',[self.d_head])]))
         cross_past_value = Tensor(name='cross_past_value',
                     dtype=trt.float32,
-                    shape=[6, 8, 1500, 64],
-                    dim_range=OrderedDict([('num_layers',[6]),('num_head',[8]),('kv_seq_len',[1500]),('embed_per_head',[64])]))
+                    shape=[self.decoder_layers, self.decoder_attention_heads, self.max_source_positions, self.d_head],
+                    dim_range=OrderedDict([('num_layers',[self.decoder_layers]),('num_head',[self.decoder_attention_heads]),('kv_seq_len',[self.max_source_positions]),('embed_per_head',[self.d_head])]))
 
         past_self_cache_mask = Tensor(name='past_self_cache_mask',
                     dtype=trt.float32,
                     shape=[-1],
-                    dim_range=OrderedDict([('past_self_cache_length',[[1,1,448+1]])]))
+                    dim_range=OrderedDict([('past_self_cache_length',[[1,1,self.max_target_positions+1]])]))
         
         past_cross_cache_mask = Tensor(name='past_cross_cache_mask',
                     dtype=trt.float32,
                     shape=[-1],
-                    dim_range=OrderedDict([('past_cross_cache_length',[[1,1,1500+1]])]))
+                    dim_range=OrderedDict([('past_cross_cache_length',[[1,1,self.max_source_positions+1]])]))
 
         return (input_features, encoder_hidden_states, self_past_key, self_past_value, cross_past_key, cross_past_value, past_self_cache_mask, past_cross_cache_mask)

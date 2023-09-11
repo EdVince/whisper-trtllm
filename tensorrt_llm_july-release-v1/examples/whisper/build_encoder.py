@@ -1,6 +1,8 @@
+import os
 import time
 import torch
 import pickle
+import argparse
 
 from transformers import WhisperForConditionalGeneration
 
@@ -18,16 +20,28 @@ def serialize_engine(engine, path):
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))
     logger.info(f'Engine serialized. Total time: {t}')
 
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--whisper', type=str, default='whisper-tiny.en', required=True)
+    parser.add_argument('--engine_precision', type=str, default='float32')
+    parser.add_argument('--log_level', type=str, default='error')
+    parser.add_argument('--engine_dir', type=str, default='whisper_outputs')
+    return parser.parse_args()
+
 if __name__ == '__main__':
 
-    logger.set_level('info')
+    args = parse_arguments()
+
+    logger.set_level(args.log_level)
     torch.cuda.set_device(0)
-    tensorrt_llm.logger.set_level('info')
+    tensorrt_llm.logger.set_level(args.log_level)
+
+    os.makedirs(args.engine_dir, exist_ok=True)
 
     # create huggingface model
-    hf_model = WhisperForConditionalGeneration.from_pretrained("whisper-medium.en")
+    hf_model = WhisperForConditionalGeneration.from_pretrained(args.whisper)
     config = hf_model.config.to_dict()
-    with open('engine/config.pkl', 'wb') as f:
+    with open(os.path.join(args.engine_dir,'config.pkl'), 'wb') as f:
         pickle.dump(config, f)
 
     # create tensort-llm model
@@ -45,7 +59,7 @@ if __name__ == '__main__':
     builder = Builder()
     builder_config = builder.create_builder_config(
         name='WhisperEncoder',
-        precision='float32',
+        precision=args.engine_precision,
         timing_cache='model.cache',
         tensor_parallel=1,
         parallel_build=False,
@@ -79,7 +93,7 @@ if __name__ == '__main__':
     # set plugin
     network = builder.create_network()
     network.trt_network.name = 'WhisperEncoder'
-    network.plugin_config.set_identity_plugin(dtype='float32')
+    network.plugin_config.set_identity_plugin(dtype=args.engine_precision)
 
     # get static graph
     with net_guard(network):
@@ -92,4 +106,4 @@ if __name__ == '__main__':
 
     # save engine
     assert engine is not None, f'Failed to build engine'
-    serialize_engine(engine, 'engine/WhisperEncoder.engine')
+    serialize_engine(engine, os.path.join(args.engine_dir,'WhisperEncoder.engine'))

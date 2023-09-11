@@ -1,7 +1,13 @@
+import warnings
+warnings.filterwarnings("ignore")
+
 import os
+import time
 import contextlib
 import torch
 import pickle
+import argparse
+from tqdm import tqdm
 
 from transformers import WhisperProcessor
 from transformers.generation.logits_process import LogitsProcessorList, SuppressTokensLogitsProcessor, SuppressTokensAtBeginLogitsProcessor, ForceTokensLogitsProcessor
@@ -39,11 +45,20 @@ def _scoped_stream():
     finally:
         stream.synchronize()
 
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--whisper', type=str, default='whisper-tiny.en', required=True)
+    parser.add_argument('--engine_precision', type=str, default='float32')
+    parser.add_argument('--log_level', type=str, default='error')
+    parser.add_argument('--engine_dir', type=str, default='whisper_outputs')
+    parser.add_argument('--compare', action='store_true')
+    return parser.parse_args()
+
 class WhisperEncoder:
-    def __init__(self):
+    def __init__(self,args=None,config=None):
         
         # load engine
-        with open('engine/WhisperEncoder.engine', 'rb') as f:
+        with open(os.path.join(args.engine_dir,'WhisperEncoder.engine'), 'rb') as f:
             engine_buffer = f.read()
         self.session = Session.from_serialized_engine(engine_buffer)
 
@@ -76,10 +91,12 @@ class WhisperEncoder:
         return hidden_states
 
 class WhisperDecoder:
-    def __init__(self):
+    def __init__(self,args=None,config=None):
+
+        self.config = config
         
         # load engine
-        with open('engine/WhisperDecoder.engine', 'rb') as f:
+        with open(os.path.join(args.engine_dir,'WhisperDecoder.engine'), 'rb') as f:
             engine_buffer = f.read()
         self.session = Session.from_serialized_engine(engine_buffer)
 
@@ -90,10 +107,14 @@ class WhisperDecoder:
             'encoder_hidden_states': encoder_outputs.to(dtype=torch.float32,device='cuda:0'),
         }
         if past_key_values is None:
-            inputs['self_past_key'] = torch.rand(6,8,1,64).cuda()
-            inputs['self_past_value'] = torch.rand(6,8,1,64).cuda()
-            inputs['cross_past_key'] = torch.rand(6,8,1500,64).cuda()
-            inputs['cross_past_value'] = torch.rand(6,8,1500,64).cuda()
+            decoder_layers = config['decoder_layers']
+            decoder_attention_heads = config['decoder_attention_heads']
+            d_head = config['d_model'] // config['decoder_attention_heads']
+            
+            inputs['self_past_key'] = torch.rand(decoder_layers,decoder_attention_heads,1,d_head).cuda()
+            inputs['self_past_value'] = torch.rand(decoder_layers,decoder_attention_heads,1,d_head).cuda()
+            inputs['cross_past_key'] = torch.rand(decoder_layers,decoder_attention_heads,1500,d_head).cuda()
+            inputs['cross_past_value'] = torch.rand(decoder_layers,decoder_attention_heads,1500,d_head).cuda()
             inputs['past_self_cache_mask'] = torch.rand(1,).cuda()
             inputs['past_cross_cache_mask'] = torch.rand(1,).cuda()
         else:
@@ -207,13 +228,15 @@ def greedy_search(
 
 if __name__ == '__main__':
 
-    tensorrt_llm.logger.set_level('info')
+    args = parse_arguments()
+
+    tensorrt_llm.logger.set_level(args.log_level)
     runtime_rank = tensorrt_llm.mpi_rank()
     runtime_mapping = tensorrt_llm.Mapping(1, 0)
     torch.cuda.set_device(0)
 
     # load processor
-    hf_processor = WhisperProcessor.from_pretrained("whisper-base.en")
+    hf_processor = WhisperProcessor.from_pretrained(args.whisper)
 
     # load dataset
     if os.path.exists('./librispeech_asr_dummy'):
@@ -223,41 +246,95 @@ if __name__ == '__main__':
         print('loading dataset from huggingface')
         ds = datasets.load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
         ds.save_to_disk('./librispeech_asr_dummy')
-    
-    # fetch one audio
-    sample = ds[0]["audio"]
-    input_features = hf_processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
-    input_features = input_features.cuda()
 
     # load whisper config
-    with open('engine/config.pkl', 'rb') as f:
+    with open(os.path.join(args.engine_dir,'config.pkl'), 'rb') as f:
         config = pickle.load(f)
 
     # init whisper
-    whisperencoder = WhisperEncoder()
-    whisperdecoder = WhisperDecoder()
+    whisperencoder = WhisperEncoder(args=args,config=config)
+    whisperdecoder = WhisperDecoder(args=args,config=config)
     
     
-    # encode
-    encoder_outputs = whisperencoder(input_features)
+    # go through dataset by trtllm twice
+    for j in range(1):
+        
+        trtllm_transcriptions = []
+        
+        start_time = time.time()
+        for i in tqdm(range(len(ds))):
+            
+            # fetch audio
+            sample = ds[i]["audio"]
+            input_features = hf_processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
+            input_features = input_features.cuda()
+            
+            # encode
+            encoder_outputs = whisperencoder(input_features)
 
-    # prepare
-    input_ids = torch.Tensor([[config['decoder_start_token_id']]]).to(dtype=torch.int32).cuda()
-    logits_processor = get_logits_processor(config,input_ids.shape[-1])
-    stopping_criteria = get_stopping_criteria(config)
+            # prepare
+            input_ids = torch.Tensor([[config['decoder_start_token_id']]]).to(dtype=torch.int32).cuda()
+            logits_processor = get_logits_processor(config,input_ids.shape[-1])
+            stopping_criteria = get_stopping_criteria(config)
 
-    # greedy decode
-    predicted_ids = greedy_search(
-        model=whisperdecoder,
-        encoder_outputs=encoder_outputs,
-        input_ids=input_ids,
-        logits_processor=logits_processor,
-        stopping_criteria=stopping_criteria,
-        pad_token_id=config['pad_token_id'],
-        eos_token_id=config['eos_token_id'])
+            # greedy decode
+            predicted_ids = greedy_search(
+                model=whisperdecoder,
+                encoder_outputs=encoder_outputs,
+                input_ids=input_ids,
+                logits_processor=logits_processor,
+                stopping_criteria=stopping_criteria,
+                pad_token_id=config['pad_token_id'],
+                eos_token_id=config['eos_token_id'])
 
-    # id to text
-    transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-    
-    print(transcription)
-    
+            # id to text
+            transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+            
+            trtllm_transcriptions.extend(transcription)
+
+        end_time = time.time()
+        
+    trtllm_time = end_time - start_time
+
+
+    if args.compare:
+        from transformers import WhisperForConditionalGeneration
+        hf_model = WhisperForConditionalGeneration.from_pretrained(args.whisper)
+        
+        for j in range(1):
+            
+            hf_transcriptions = []
+            
+            start_time = time.time()
+            for i in tqdm(range(len(ds))):
+                
+                # fetch audio
+                sample = ds[i]["audio"]
+                input_features = hf_processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
+
+                # generate token ids
+                predicted_ids = hf_model.generate(input_features)
+
+                # decode token ids to text
+                transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+                
+                hf_transcriptions.extend(transcription)
+                
+            end_time = time.time()
+        
+        hf_time = end_time - start_time
+        
+        print('TensorRT-LLM time: ',trtllm_time)
+        print('Huggingface  time: ',hf_time)
+        
+        diff_transcription = []
+        for a, b in zip(trtllm_transcriptions,hf_transcriptions):
+            if a != b:
+                diff_transcription.append((a,b))
+                
+        print(f'Compare Result: same [{len(trtllm_transcriptions)-len(diff_transcription)}], diff [{len(diff_transcription)}]')
+        if len(diff_transcription) > 0:
+            for a,b in diff_transcription:
+                print('-------------------------')
+                print(f'TensorRT-LLM: {a}')
+                print(f'Huggingface : {b}')
