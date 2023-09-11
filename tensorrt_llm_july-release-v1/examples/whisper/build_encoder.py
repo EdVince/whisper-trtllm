@@ -25,13 +25,21 @@ if __name__ == '__main__':
     tensorrt_llm.logger.set_level('info')
 
     # create huggingface model
-    hf_model = WhisperForConditionalGeneration.from_pretrained("whisper-base.en")
+    hf_model = WhisperForConditionalGeneration.from_pretrained("whisper-medium.en")
     config = hf_model.config.to_dict()
     with open('engine/config.pkl', 'wb') as f:
         pickle.dump(config, f)
 
     # create tensort-llm model
-    trtllm_model = tensorrt_llm.models.WhisperEncoder()
+    trtllm_model = tensorrt_llm.models.WhisperEncoder(
+        d_model=config['d_model'],
+        num_mel_bins=config['num_mel_bins'],
+        max_source_positions=config['max_source_positions'],
+        encoder_layers=config['encoder_layers'],
+        encoder_attention_heads=config['encoder_attention_heads'],
+        activation_function=config['activation_function'],
+        encoder_ffn_dim=config['encoder_ffn_dim']
+    )
 
     # create builder
     builder = Builder()
@@ -52,7 +60,7 @@ if __name__ == '__main__':
     trtllm_model.conv2.weight.value = ckpt['model.encoder.conv2.weight'].unsqueeze(2).numpy()
     trtllm_model.conv2.bias.value = ckpt['model.encoder.conv2.bias'].numpy()
     trtllm_model.embed_positions_weight = ckpt['model.encoder.embed_positions.weight'].unsqueeze(0).numpy()
-    for idx in range(6):
+    for idx in range(config['encoder_layers']):
         trtllm_model.layers[idx].self_attn.qkv.weight.value = torch.cat([ckpt[f'model.encoder.layers.{idx}.self_attn.q_proj.weight'],ckpt[f'model.encoder.layers.{idx}.self_attn.k_proj.weight'],ckpt[f'model.encoder.layers.{idx}.self_attn.v_proj.weight']],dim=0).numpy()
         trtllm_model.layers[idx].self_attn.qkv.bias.value = torch.cat([ckpt[f'model.encoder.layers.{idx}.self_attn.q_proj.bias'],torch.zeros_like(ckpt[f'model.encoder.layers.{idx}.self_attn.q_proj.bias']),ckpt[f'model.encoder.layers.{idx}.self_attn.v_proj.bias']],dim=0).numpy()
         trtllm_model.layers[idx].self_attn.dense.weight.value = ckpt[f'model.encoder.layers.{idx}.self_attn.out_proj.weight'].numpy()
