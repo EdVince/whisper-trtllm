@@ -1,0 +1,63 @@
+{
+  "builder_name": "librispeech_asr_dummy",
+  "citation": "@inproceedings{panayotov2015librispeech,\n  title={Librispeech: an ASR corpus based on public domain audio books},\n  author={Panayotov, Vassil and Chen, Guoguo and Povey, Daniel and Khudanpur, Sanjeev},\n  booktitle={Acoustics, Speech and Signal Processing (ICASSP), 2015 IEEE International Conference on},\n  pages={5206--5210},\n  year={2015},\n  organization={IEEE}\n}\n",
+  "config_name": "clean",
+  "dataset_name": "librispeech_asr_dummy",
+  "dataset_size": 33700,
+  "description": "LibriSpeech is a corpus of approximately 1000 hours of read English speech with sampling rate of 16 kHz,\nprepared by Vassil Panayotov with the assistance of Daniel Povey. The data is derived from read\naudiobooks from the LibriVox project, and has been carefully segmented and aligned.\n\nNote that in order to limit the required storage for preparing this dataset, the audio\nis stored in the .flac format and is not converted to a float32 array. To convert, the audio\nfile to a float32 array, please make use of the `.map()` function as follows:\n\n\n```python\nimport soundfile as sf\n\ndef map_to_array(batch):\n    speech_array, _ = sf.read(batch[\"file\"])\n    batch[\"speech\"] = speech_array\n    return batch\n\ndataset = dataset.map(map_to_array, remove_columns=[\"file\"])\n```\n",
+  "download_checksums": {
+    "https://s3.amazonaws.com/datasets.huggingface.co/librispeech_asr/2.1.0/dev_clean.tar.gz": {
+      "num_bytes": 9078094,
+      "checksum": null
+    }
+  },
+  "download_size": 9078094,
+  "features": {
+    "file": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "audio": {
+      "sampling_rate": 16000,
+      "_type": "Audio"
+    },
+    "text": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "speaker_id": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "chapter_id": {
+      "dtype": "int64",
+      "_type": "Value"
+    },
+    "id": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  "homepage": "http://www.openslr.org/12",
+  "license": "",
+  "size_in_bytes": 9111794,
+  "splits": {
+    "validation": {
+      "name": "validation",
+      "num_bytes": 33700,
+      "num_examples": 73,
+      "dataset_name": "librispeech_asr_dummy"
+    }
+  },
+  "supervised_keys": {
+    "input": "speech",
+    "output": "text"
+  },
+  "version": {
+    "version_str": "2.1.0",
+    "description": "",
+    "major": 2,
+    "minor": 1,
+    "patch": 0
+  }
+}

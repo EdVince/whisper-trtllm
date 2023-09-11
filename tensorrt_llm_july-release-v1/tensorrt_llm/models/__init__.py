@@ -8,10 +8,11 @@ from .llama.model import LLaMAForCausalLM, LLaMAModel
 from .opt.model import OPTLMHeadModel, OPTModel
 from .quantized.quant import smooth_quantize, weight_only_quantize
 
-from .test.model import SimpleConvTRTLLMNet
+from .whisper.model import WhisperEncoder, WhisperDecoder
 
 __all__ = [
-    'SimpleConvTRTLLMNet',
+    'WhisperEncoder',
+    'WhisperDecoder',
     'BertModel',
     'BertForQuestionAnswering',
     'BloomModel',

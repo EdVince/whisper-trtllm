@@ -1551,21 +1551,17 @@ class WhisperForConditionalGeneration(WhisperPreTrainedModel):
                     - [`~generation.BeamSampleEncoderDecoderOutput`]
         """
         
-        logits_processor = None
-        stopping_criteria = None
-        prefix_allowed_tokens_fn = None
         
         generation_config = self.generation_config
         generation_config.return_timestamps = False
         generation_config.forced_decoder_ids = self.config.forced_decoder_ids
-
         outputs = super().generate(
             inputs,
             generation_config,
-            logits_processor,
-            stopping_criteria,
-            prefix_allowed_tokens_fn,
-            synced_gpus,
+            None,
+            None,
+            None,
+            False,
             **kwargs,
         )
 

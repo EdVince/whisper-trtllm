@@ -6,5 +6,10 @@ tensorrt_llm_july-release-v1/cpp/build
 whisper_models/whisper-base.en
 whisper_models/whisper-medium.en
 
+tensorrt_llm_july-release-v1/examples/test/whisper-base.en
+tensorrt_llm_july-release-v1/examples/test/librispeech_asr_dummy
+tensorrt_llm_july-release-v1/examples/test/engine
+
 *.pth
 *.engine
+*.pkl

@@ -889,134 +889,34 @@ class GenerationMixin:
         # instantiate processors list
         processors = LogitsProcessorList()
 
-        if generation_config.guidance_scale is not None and generation_config.guidance_scale != 1:
-            processors.append(
-                UnbatchedClassifierFreeGuidanceLogitsProcessor(
-                    generation_config.guidance_scale,
-                    self,
-                    unconditional_ids=negative_prompt_ids,
-                    unconditional_attention_mask=negative_prompt_attention_mask,
-                    use_cache=model_kwargs["use_cache"],
-                )
-            )
-        if generation_config.sequence_bias is not None:
-            processors.append(SequenceBiasLogitsProcessor(sequence_bias=generation_config.sequence_bias))
+        processors.append(SuppressTokensLogitsProcessor(generation_config.suppress_tokens))
 
-        if generation_config.diversity_penalty is not None and generation_config.diversity_penalty > 0.0:
-            processors.append(
-                HammingDiversityLogitsProcessor(
-                    diversity_penalty=generation_config.diversity_penalty,
-                    num_beams=generation_config.num_beams,
-                    num_beam_groups=generation_config.num_beam_groups,
-                )
-            )
-        if (
-            generation_config.encoder_repetition_penalty is not None
-            and generation_config.encoder_repetition_penalty != 1.0
-        ):
-            processors.append(
-                EncoderRepetitionPenaltyLogitsProcessor(
-                    penalty=generation_config.encoder_repetition_penalty, encoder_input_ids=encoder_input_ids
-                )
-            )
-        if generation_config.repetition_penalty is not None and generation_config.repetition_penalty != 1.0:
-            processors.append(RepetitionPenaltyLogitsProcessor(penalty=generation_config.repetition_penalty))
-        if generation_config.no_repeat_ngram_size is not None and generation_config.no_repeat_ngram_size > 0:
-            processors.append(NoRepeatNGramLogitsProcessor(generation_config.no_repeat_ngram_size))
-        if (
-            generation_config.encoder_no_repeat_ngram_size is not None
-            and generation_config.encoder_no_repeat_ngram_size > 0
-        ):
-            if self.config.is_encoder_decoder:
-                processors.append(
-                    EncoderNoRepeatNGramLogitsProcessor(
-                        generation_config.encoder_no_repeat_ngram_size, encoder_input_ids
-                    )
-                )
-            else:
-                raise ValueError(
-                    "It's impossible to use `encoder_no_repeat_ngram_size` with decoder-only architecture"
-                )
-        if generation_config.bad_words_ids is not None:
-            processors.append(
-                NoBadWordsLogitsProcessor(generation_config.bad_words_ids, generation_config.eos_token_id)
-            )
-        if (
-            generation_config.min_length is not None
-            and generation_config.eos_token_id is not None
-            and generation_config.min_length > 0
-        ):
-            processors.append(MinLengthLogitsProcessor(generation_config.min_length, generation_config.eos_token_id))
-        if (
-            generation_config.min_new_tokens is not None
-            and generation_config.eos_token_id is not None
-            and generation_config.min_new_tokens > 0
-        ):
-            processors.append(
-                MinNewTokensLengthLogitsProcessor(
-                    input_ids_seq_length, generation_config.min_new_tokens, generation_config.eos_token_id
-                )
-            )
-        if prefix_allowed_tokens_fn is not None:
-            processors.append(
-                PrefixConstrainedLogitsProcessor(
-                    prefix_allowed_tokens_fn, generation_config.num_beams // generation_config.num_beam_groups
-                )
-            )
-        if generation_config.forced_bos_token_id is not None:
-            processors.append(ForcedBOSTokenLogitsProcessor(generation_config.forced_bos_token_id))
-        if generation_config.forced_eos_token_id is not None:
-            processors.append(
-                ForcedEOSTokenLogitsProcessor(generation_config.max_length, generation_config.forced_eos_token_id)
-            )
-        if generation_config.remove_invalid_values is True:
-            processors.append(InfNanRemoveLogitsProcessor())
-        if generation_config.exponential_decay_length_penalty is not None:
-            processors.append(
-                ExponentialDecayLengthPenalty(
-                    generation_config.exponential_decay_length_penalty,
-                    generation_config.eos_token_id,
-                    input_ids_seq_length,
-                )
-            )
-        if generation_config.suppress_tokens is not None:
-            processors.append(SuppressTokensLogitsProcessor(generation_config.suppress_tokens))
-        if generation_config.begin_suppress_tokens is not None:
-            begin_index = input_ids_seq_length
-            begin_index = (
-                begin_index
-                if (input_ids_seq_length > 1 or generation_config.forced_bos_token_id is None)
-                else begin_index + 1
-            )
-            if generation_config.forced_decoder_ids is not None:
-                # generation starts after the last token that is forced
-                begin_index += generation_config.forced_decoder_ids[-1][0]
-            processors.append(
-                SuppressTokensAtBeginLogitsProcessor(generation_config.begin_suppress_tokens, begin_index)
-            )
-        if generation_config.forced_decoder_ids is not None:
-            processors.append(ForceTokensLogitsProcessor(generation_config.forced_decoder_ids))
-        processors = self._merge_criteria_processor_list(processors, logits_processor)
-        # `LogitNormalization` should always be the last logit processor, when present
-        if generation_config.renormalize_logits is True:
-            processors.append(LogitNormalization())
+        begin_index = input_ids_seq_length
+        begin_index = begin_index if generation_config.forced_bos_token_id is None else begin_index + 1
+        begin_index += generation_config.forced_decoder_ids[-1][0]
+        processors.append(SuppressTokensAtBeginLogitsProcessor(generation_config.begin_suppress_tokens, begin_index))
+
+        processors.append(ForceTokensLogitsProcessor(generation_config.forced_decoder_ids))
+
+        # processors = self._merge_criteria_processor_list(processors, logits_processor)
         return processors
 
     def _get_stopping_criteria(
         self, generation_config: GenerationConfig, stopping_criteria: Optional[StoppingCriteriaList]
     ) -> StoppingCriteriaList:
         criteria = StoppingCriteriaList()
-        if generation_config.max_length is not None:
-            max_position_embeddings = getattr(self.config, "max_position_embeddings", None)
-            criteria.append(
-                MaxLengthCriteria(
-                    max_length=generation_config.max_length,
-                    max_position_embeddings=max_position_embeddings,
-                )
+
+
+        max_position_embeddings = getattr(self.config, "max_position_embeddings", None)
+        print(max_position_embeddings)
+        criteria.append(
+            MaxLengthCriteria(
+                max_length=generation_config.max_length,
+                max_position_embeddings=max_position_embeddings,
             )
-        if generation_config.max_time is not None:
-            criteria.append(MaxTimeCriteria(max_time=generation_config.max_time))
-        criteria = self._merge_criteria_processor_list(criteria, stopping_criteria)
+        )
+            
+        print(criteria)
         return criteria
 
     def _merge_criteria_processor_list(
@@ -1384,9 +1284,6 @@ class GenerationMixin:
         """
 
 
-        logits_processor = None
-        stopping_criteria = None
-        prefix_allowed_tokens_fn = None
         streamer = None
         negative_prompt_ids = None
         negative_prompt_attention_mask = None
@@ -1394,7 +1291,6 @@ class GenerationMixin:
 
         # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
         self._validate_model_class()
-
         generation_config = copy.deepcopy(generation_config)
         model_kwargs = generation_config.update(**kwargs)  # All unused kwargs must be model kwargs
         generation_config.validate()
@@ -1415,10 +1311,7 @@ class GenerationMixin:
         # 4. Define other model kwargs
         model_kwargs["output_attentions"] = generation_config.output_attentions
         model_kwargs["output_hidden_states"] = generation_config.output_hidden_states
-        # decoder-only models with inputs_embeds forwarding must use caching (otherwise we can't detect whether we are
-        # generating the first new token or not, and we only want to use the embeddings for the first new token)
         model_kwargs["use_cache"] = generation_config.use_cache
-
         model_kwargs["attention_mask"] = self._prepare_attention_mask_for_generation(inputs_tensor, generation_config.pad_token_id, generation_config.eos_token_id)
 
         # if model is encoder decoder encoder_outputs are created
@@ -1434,7 +1327,7 @@ class GenerationMixin:
             bos_token_id=generation_config.bos_token_id,
             device=inputs_tensor.device,
         )
-
+        
         # 6. Prepare `max_length` depending on other stopping criteria.
         input_ids_length = input_ids.shape[-1]
         has_default_max_length = kwargs.get("max_length") is None and generation_config.max_length is not None
@@ -1445,7 +1338,7 @@ class GenerationMixin:
             generation_config=generation_config,
             input_ids_seq_length=input_ids_length,
             encoder_input_ids=inputs_tensor,
-            prefix_allowed_tokens_fn=prefix_allowed_tokens_fn,
+            prefix_allowed_tokens_fn=None,
             logits_processor=logits_processor,
             model_kwargs=model_kwargs,
             negative_prompt_ids=negative_prompt_ids,
@@ -1468,6 +1361,173 @@ class GenerationMixin:
             streamer=streamer,
             **model_kwargs,
         )
+
+    def greedy_search(
+        self,
+        input_ids: torch.LongTensor,
+        logits_processor: Optional[LogitsProcessorList] = None,
+        stopping_criteria: Optional[StoppingCriteriaList] = None,
+        max_length: Optional[int] = None,
+        pad_token_id: Optional[int] = None,
+        eos_token_id: Optional[Union[int, List[int]]] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        output_scores: Optional[bool] = None,
+        return_dict_in_generate: Optional[bool] = None,
+        synced_gpus: bool = False,
+        streamer: Optional["BaseStreamer"] = None,
+        **model_kwargs,
+    ) -> Union[GreedySearchOutput, torch.LongTensor]:
+        r"""
+        Generates sequences of token ids for models with a language modeling head using **greedy decoding** and can be
+        used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
+
+        <Tip warning={true}>
+
+        In most cases, you do not need to call [`~generation.GenerationMixin.greedy_search`] directly. Use generate()
+        instead. For an overview of generation strategies and code examples, check the [following
+        guide](../generation_strategies).
+
+        </Tip>
+
+
+        Parameters:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                The sequence used as a prompt for the generation.
+            logits_processor (`LogitsProcessorList`, *optional*):
+                An instance of [`LogitsProcessorList`]. List of instances of class derived from [`LogitsProcessor`]
+                used to modify the prediction scores of the language modeling head applied at each generation step.
+            stopping_criteria (`StoppingCriteriaList`, *optional*):
+                An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
+                used to tell if the generation loop should stop.
+
+            max_length (`int`, *optional*, defaults to 20):
+                **DEPRECATED**. Use `logits_processor` or `stopping_criteria` directly to cap the number of generated
+                tokens. The maximum length of the sequence to be generated.
+            pad_token_id (`int`, *optional*):
+                The id of the *padding* token.
+            eos_token_id (`Union[int, List[int]]`, *optional*):
+                The id of the *end-of-sequence* token. Optionally, use a list to set multiple *end-of-sequence* tokens.
+            output_attentions (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more details.
+            output_hidden_states (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
+                for more details.
+            output_scores (`bool`, *optional*, defaults to `False`):
+                Whether or not to return the prediction scores. See `scores` under returned tensors for more details.
+            return_dict_in_generate (`bool`, *optional*, defaults to `False`):
+                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
+            synced_gpus (`bool`, *optional*, defaults to `False`):
+                Whether to continue running the while loop until max_length (needed for ZeRO stage 3)
+            streamer (`BaseStreamer`, *optional*):
+                Streamer object that will be used to stream the generated sequences. Generated tokens are passed
+                through `streamer.put(token_ids)` and the streamer is responsible for any further processing.
+            model_kwargs:
+                Additional model specific keyword arguments will be forwarded to the `forward` function of the model.
+                If model is an encoder-decoder model the kwargs should include `encoder_outputs`.
+
+        Return:
+            [`~generation.GreedySearchDecoderOnlyOutput`], [`~generation.GreedySearchEncoderDecoderOutput`] or
+            `torch.LongTensor`: A `torch.LongTensor` containing the generated tokens (default behaviour) or a
+            [`~generation.GreedySearchDecoderOnlyOutput`] if `model.config.is_encoder_decoder=False` and
+            `return_dict_in_generate=True` or a [`~generation.GreedySearchEncoderDecoderOutput`] if
+            `model.config.is_encoder_decoder=True`.
+
+        Examples:
+
+        ```python
+        >>> from transformers import (
+        ...     AutoTokenizer,
+        ...     AutoModelForCausalLM,
+        ...     LogitsProcessorList,
+        ...     MinLengthLogitsProcessor,
+        ...     StoppingCriteriaList,
+        ...     MaxLengthCriteria,
+        ... )
+
+        >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        >>> model = AutoModelForCausalLM.from_pretrained("gpt2")
+
+        >>> # set pad_token_id to eos_token_id because GPT2 does not have a PAD token
+        >>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
+
+        >>> input_prompt = "It might be possible to"
+        >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids
+
+        >>> # instantiate logits processors
+        >>> logits_processor = LogitsProcessorList(
+        ...     [
+        ...         MinLengthLogitsProcessor(10, eos_token_id=model.generation_config.eos_token_id),
+        ...     ]
+        ... )
+        >>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=20)])
+
+        >>> outputs = model.greedy_search(
+        ...     input_ids, logits_processor=logits_processor, stopping_criteria=stopping_criteria
+        ... )
+
+        >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
+        ["It might be possible to get a better understanding of the nature of the problem, but it's not"]
+        ```"""
+        
+        # init values
+        eos_token_id = [eos_token_id]
+        eos_token_id_tensor = torch.tensor(eos_token_id).to(input_ids.device)
+        
+        # init attention / hidden states / scores tuples
+        scores = None
+
+        # keep track of which sequences are already finished
+        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+
+        this_peer_finished = False  # used by synced_gpus only
+        while True:
+
+            # prepare model inputs
+            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+
+            # print(model_inputs['encoder_outputs']['last_hidden_state'].shape,model_inputs['past_key_values'] is None,model_inputs['decoder_input_ids'],model_inputs['use_cache'],model_inputs['decoder_attention_mask'])
+
+            # forward pass to get next token
+            outputs = self(
+                **model_inputs,
+                return_dict=True,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+            )
+
+            next_token_logits = outputs.logits[:, -1, :]
+
+            # pre-process distribution
+            next_tokens_scores = logits_processor(input_ids, next_token_logits)
+
+            # argmax
+            next_tokens = torch.argmax(next_tokens_scores, dim=-1)
+
+            # finished sentences should have their next token be a padding token
+            next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
+
+            # update generated ids, model inputs, and length for next step
+            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
+            model_kwargs = self._update_model_kwargs_for_generation(outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder)
+
+            # if eos_token was found in one sentence, set sentence to finished
+            unfinished_sequences = unfinished_sequences.mul(next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0))
+
+            # stop when each sentence is finished
+            if unfinished_sequences.max() == 0:
+                this_peer_finished = True
+
+            # stop if we exceed the maximum length
+            if stopping_criteria(input_ids, scores):
+                this_peer_finished = True
+
+            if this_peer_finished and not synced_gpus:
+                break
+
+        return input_ids
+
 
     @torch.no_grad()
     def contrastive_search(
@@ -1912,170 +1972,6 @@ class GenerationMixin:
                 )
         else:
             return input_ids
-
-    def greedy_search(
-        self,
-        input_ids: torch.LongTensor,
-        logits_processor: Optional[LogitsProcessorList] = None,
-        stopping_criteria: Optional[StoppingCriteriaList] = None,
-        max_length: Optional[int] = None,
-        pad_token_id: Optional[int] = None,
-        eos_token_id: Optional[Union[int, List[int]]] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_scores: Optional[bool] = None,
-        return_dict_in_generate: Optional[bool] = None,
-        synced_gpus: bool = False,
-        streamer: Optional["BaseStreamer"] = None,
-        **model_kwargs,
-    ) -> Union[GreedySearchOutput, torch.LongTensor]:
-        r"""
-        Generates sequences of token ids for models with a language modeling head using **greedy decoding** and can be
-        used for text-decoder, text-to-text, speech-to-text, and vision-to-text models.
-
-        <Tip warning={true}>
-
-        In most cases, you do not need to call [`~generation.GenerationMixin.greedy_search`] directly. Use generate()
-        instead. For an overview of generation strategies and code examples, check the [following
-        guide](../generation_strategies).
-
-        </Tip>
-
-
-        Parameters:
-            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
-                The sequence used as a prompt for the generation.
-            logits_processor (`LogitsProcessorList`, *optional*):
-                An instance of [`LogitsProcessorList`]. List of instances of class derived from [`LogitsProcessor`]
-                used to modify the prediction scores of the language modeling head applied at each generation step.
-            stopping_criteria (`StoppingCriteriaList`, *optional*):
-                An instance of [`StoppingCriteriaList`]. List of instances of class derived from [`StoppingCriteria`]
-                used to tell if the generation loop should stop.
-
-            max_length (`int`, *optional*, defaults to 20):
-                **DEPRECATED**. Use `logits_processor` or `stopping_criteria` directly to cap the number of generated
-                tokens. The maximum length of the sequence to be generated.
-            pad_token_id (`int`, *optional*):
-                The id of the *padding* token.
-            eos_token_id (`Union[int, List[int]]`, *optional*):
-                The id of the *end-of-sequence* token. Optionally, use a list to set multiple *end-of-sequence* tokens.
-            output_attentions (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more details.
-            output_hidden_states (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the hidden states of all layers. See `hidden_states` under returned tensors
-                for more details.
-            output_scores (`bool`, *optional*, defaults to `False`):
-                Whether or not to return the prediction scores. See `scores` under returned tensors for more details.
-            return_dict_in_generate (`bool`, *optional*, defaults to `False`):
-                Whether or not to return a [`~utils.ModelOutput`] instead of a plain tuple.
-            synced_gpus (`bool`, *optional*, defaults to `False`):
-                Whether to continue running the while loop until max_length (needed for ZeRO stage 3)
-            streamer (`BaseStreamer`, *optional*):
-                Streamer object that will be used to stream the generated sequences. Generated tokens are passed
-                through `streamer.put(token_ids)` and the streamer is responsible for any further processing.
-            model_kwargs:
-                Additional model specific keyword arguments will be forwarded to the `forward` function of the model.
-                If model is an encoder-decoder model the kwargs should include `encoder_outputs`.
-
-        Return:
-            [`~generation.GreedySearchDecoderOnlyOutput`], [`~generation.GreedySearchEncoderDecoderOutput`] or
-            `torch.LongTensor`: A `torch.LongTensor` containing the generated tokens (default behaviour) or a
-            [`~generation.GreedySearchDecoderOnlyOutput`] if `model.config.is_encoder_decoder=False` and
-            `return_dict_in_generate=True` or a [`~generation.GreedySearchEncoderDecoderOutput`] if
-            `model.config.is_encoder_decoder=True`.
-
-        Examples:
-
-        ```python
-        >>> from transformers import (
-        ...     AutoTokenizer,
-        ...     AutoModelForCausalLM,
-        ...     LogitsProcessorList,
-        ...     MinLengthLogitsProcessor,
-        ...     StoppingCriteriaList,
-        ...     MaxLengthCriteria,
-        ... )
-
-        >>> tokenizer = AutoTokenizer.from_pretrained("gpt2")
-        >>> model = AutoModelForCausalLM.from_pretrained("gpt2")
-
-        >>> # set pad_token_id to eos_token_id because GPT2 does not have a PAD token
-        >>> model.generation_config.pad_token_id = model.generation_config.eos_token_id
-
-        >>> input_prompt = "It might be possible to"
-        >>> input_ids = tokenizer(input_prompt, return_tensors="pt").input_ids
-
-        >>> # instantiate logits processors
-        >>> logits_processor = LogitsProcessorList(
-        ...     [
-        ...         MinLengthLogitsProcessor(10, eos_token_id=model.generation_config.eos_token_id),
-        ...     ]
-        ... )
-        >>> stopping_criteria = StoppingCriteriaList([MaxLengthCriteria(max_length=20)])
-
-        >>> outputs = model.greedy_search(
-        ...     input_ids, logits_processor=logits_processor, stopping_criteria=stopping_criteria
-        ... )
-
-        >>> tokenizer.batch_decode(outputs, skip_special_tokens=True)
-        ["It might be possible to get a better understanding of the nature of the problem, but it's not"]
-        ```"""
-        
-        # init values
-        eos_token_id = [eos_token_id]
-        eos_token_id_tensor = torch.tensor(eos_token_id).to(input_ids.device)
-        
-        # init attention / hidden states / scores tuples
-        scores = None
-
-        # keep track of which sequences are already finished
-        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
-
-        this_peer_finished = False  # used by synced_gpus only
-        while True:
-
-            # prepare model inputs
-            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
-            # forward pass to get next token
-            outputs = self(
-                **model_inputs,
-                return_dict=True,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-            )
-
-            next_token_logits = outputs.logits[:, -1, :]
-
-            # pre-process distribution
-            next_tokens_scores = logits_processor(input_ids, next_token_logits)
-
-            # argmax
-            next_tokens = torch.argmax(next_tokens_scores, dim=-1)
-
-            # finished sentences should have their next token be a padding token
-            next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
-
-            # update generated ids, model inputs, and length for next step
-            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
-            model_kwargs = self._update_model_kwargs_for_generation(outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder)
-
-            # if eos_token was found in one sentence, set sentence to finished
-            unfinished_sequences = unfinished_sequences.mul(next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0))
-
-            # stop when each sentence is finished
-            if unfinished_sequences.max() == 0:
-                this_peer_finished = True
-
-            # stop if we exceed the maximum length
-            if stopping_criteria(input_ids, scores):
-                this_peer_finished = True
-
-            if this_peer_finished and not synced_gpus:
-                break
-
-        return input_ids
 
     def sample(
         self,

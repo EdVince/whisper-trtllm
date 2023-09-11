@@ -150,6 +150,7 @@ TensorRT-LLM是对TensorRT的再封装。它改善了TensorRT模型的手工搭�
   - Additional Notes
     - Provide any additional context here you think might be useful for the TensorRT team to help debug this issue (such as experiments done, potential things to investigate).
 
+对应的代码在bug0的commit上
 1. 实现了支持self/cross以及w/wo cache的WhisperDecoderAttention，WhisperDecoderLayer调用WhisperDecoderAttention两次分别做self attn和cross attn
 2. WhisperDecoderAttention的四种用法单独测试正常，集成到WhisperDecoderLayer里面后，self attn的value cache异常
 3. 代码在"tensorrt_llm_july-release-v1/tensorrt_llm/models/test/model.py"的WhisperDecoderAttention类的forward方法的"elif is_reuse"分支内，正常用法是不用mark output的，但这样出来的是全0，加上mark output是正常的，猜测是fusion有问题
