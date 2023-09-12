@@ -12,8 +12,10 @@ tensorrt_llm_july-release-v1/examples/whisper/whisper-tiny.en
 tensorrt_llm_july-release-v1/examples/whisper/whisper-small.en
 tensorrt_llm_july-release-v1/examples/whisper/whisper-base.en
 tensorrt_llm_july-release-v1/examples/whisper/whisper-medium.en
+
 tensorrt_llm_july-release-v1/examples/whisper/librispeech_asr_dummy
-tensorrt_llm_july-release-v1/examples/whisper/engine
+tensorrt_llm_july-release-v1/examples/whisper/whisper_outputs
+tensorrt_llm_july-release-v1/examples/whisper/librispeech.cache
 
 *.pth
 *.engine

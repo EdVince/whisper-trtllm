@@ -2,17 +2,18 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import os
-import time
 import contextlib
 import torch
 import pickle
 import argparse
 from tqdm import tqdm
+import jiwer
+from whisper.normalizers import EnglishTextNormalizer
+import pandas as pd
 
 from transformers import WhisperProcessor
 from transformers.generation.logits_process import LogitsProcessorList, SuppressTokensLogitsProcessor, SuppressTokensAtBeginLogitsProcessor, ForceTokensLogitsProcessor
 from transformers.generation.stopping_criteria import StoppingCriteriaList, MaxLengthCriteria
-import datasets
 
 import tensorrt as trt
 import tensorrt_llm
@@ -47,11 +48,9 @@ def _scoped_stream():
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--whisper', type=str, default='whisper-tiny.en', required=True)
-    parser.add_argument('--engine_precision', type=str, default='float32')
+    parser.add_argument('--whisper', type=str, default='whisper-tiny.en')
     parser.add_argument('--log_level', type=str, default='error')
     parser.add_argument('--engine_dir', type=str, default='whisper_outputs')
-    parser.add_argument('--compare', action='store_true')
     return parser.parse_args()
 
 class WhisperEncoder:
@@ -238,15 +237,6 @@ if __name__ == '__main__':
     # load processor
     hf_processor = WhisperProcessor.from_pretrained(args.whisper)
 
-    # load dataset
-    if os.path.exists('./librispeech_asr_dummy'):
-        print('loading dataset from disk...')
-        ds = datasets.load_from_disk('./librispeech_asr_dummy')
-    else:
-        print('loading dataset from huggingface')
-        ds = datasets.load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
-        ds.save_to_disk('./librispeech_asr_dummy')
-
     # load whisper config
     with open(os.path.join(args.engine_dir,'config.pkl'), 'rb') as f:
         config = pickle.load(f)
@@ -255,77 +245,44 @@ if __name__ == '__main__':
     whisperencoder = WhisperEncoder(args=args,config=config)
     whisperdecoder = WhisperDecoder(args=args,config=config)
     
+    # load librispeech
+    with open('librispeech.cache', 'rb') as f:
+        dataset = pickle.load(f)
+        
+    hypotheses = []
+    references = []
+        
+    for mel, text in tqdm(dataset):
+        mel = mel.unsqueeze(0).cuda()
+        
+        # encode
+        encoder_outputs = whisperencoder(mel)
+        # prepare
+        input_ids = torch.Tensor([[config['decoder_start_token_id']]]).to(dtype=torch.int32).cuda()
+        logits_processor = get_logits_processor(config,input_ids.shape[-1])
+        stopping_criteria = get_stopping_criteria(config)
+        # greedy decode
+        predicted_ids = greedy_search(
+            model=whisperdecoder,
+            encoder_outputs=encoder_outputs,
+            input_ids=input_ids,
+            logits_processor=logits_processor,
+            stopping_criteria=stopping_criteria,
+            pad_token_id=config['pad_token_id'],
+            eos_token_id=config['eos_token_id'])
+        # id to text
+        transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
+        
+        hypotheses.extend(transcription)
+        references.append(text)
+        
+    data = pd.DataFrame(dict(hypothesis=hypotheses, reference=references))
     
-    # go through dataset by trtllm twice, the first is warmup
-    for j in range(2):
-        trtllm_transcriptions = []
-        start_time = time.time()
-        for i in tqdm(range(len(ds))):
-            
-            # fetch audio
-            sample = ds[i]["audio"]
-            input_features = hf_processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
-            input_features = input_features.cuda()
-            
-            # encode
-            encoder_outputs = whisperencoder(input_features)
-            # prepare
-            input_ids = torch.Tensor([[config['decoder_start_token_id']]]).to(dtype=torch.int32).cuda()
-            logits_processor = get_logits_processor(config,input_ids.shape[-1])
-            stopping_criteria = get_stopping_criteria(config)
-            # greedy decode
-            predicted_ids = greedy_search(
-                model=whisperdecoder,
-                encoder_outputs=encoder_outputs,
-                input_ids=input_ids,
-                logits_processor=logits_processor,
-                stopping_criteria=stopping_criteria,
-                pad_token_id=config['pad_token_id'],
-                eos_token_id=config['eos_token_id'])
-
-            # id to text
-            transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-            trtllm_transcriptions.extend(transcription)
-
-        end_time = time.time()
-    trtllm_time = end_time - start_time
-
-
-    if args.compare:
-        from transformers import WhisperForConditionalGeneration
-        hf_model = WhisperForConditionalGeneration.from_pretrained(args.whisper)
-        
-        for j in range(2):
-            hf_transcriptions = []
-            start_time = time.time()
-            for i in tqdm(range(len(ds))):
-                
-                # fetch audio
-                sample = ds[i]["audio"]
-                input_features = hf_processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt").input_features
-
-                # generate token ids
-                predicted_ids = hf_model.generate(input_features)
-                
-                # decode token ids to text
-                transcription = hf_processor.batch_decode(predicted_ids, skip_special_tokens=True)
-                hf_transcriptions.extend(transcription)
-                
-            end_time = time.time()
-        hf_time = end_time - start_time
-        
-        print('TensorRT-LLM time: ',trtllm_time)
-        print('Huggingface  time: ',hf_time)
-        print('Speed up: ',hf_time/trtllm_time)
-        
-        diff_transcription = []
-        for a, b in zip(trtllm_transcriptions,hf_transcriptions):
-            if a != b:
-                diff_transcription.append((a,b))
-                
-        print(f'Compare Result: same [{len(trtllm_transcriptions)-len(diff_transcription)}], diff [{len(diff_transcription)}]')
-        if len(diff_transcription) > 0:
-            for a,b in diff_transcription:
-                print('-------------------------')
-                print(f'TensorRT-LLM: {a}')
-                print(f'Huggingface : {b}')
+    normalizer = EnglishTextNormalizer()
+    
+    data["hypothesis_clean"] = [normalizer(text) for text in data["hypothesis"]]
+    data["reference_clean"] = [normalizer(text) for text in data["reference"]]
+    
+    wer = jiwer.wer(list(data["reference_clean"]), list(data["hypothesis_clean"]))
+    print(f"WER: {wer * 100:.2f} %")
+    

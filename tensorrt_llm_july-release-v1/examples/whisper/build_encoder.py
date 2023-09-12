@@ -22,7 +22,7 @@ def serialize_engine(engine, path):
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--whisper', type=str, default='whisper-tiny.en', required=True)
+    parser.add_argument('--whisper', type=str, default='whisper-tiny.en')
     parser.add_argument('--engine_precision', type=str, default='float32')
     parser.add_argument('--log_level', type=str, default='error')
     parser.add_argument('--engine_dir', type=str, default='whisper_outputs')
