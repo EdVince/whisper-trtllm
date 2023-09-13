@@ -69,7 +69,7 @@ python cal_wer.py --whisper whisper-tiny.en
 | tiny   | 5.61%     | 5.60%     | 5.67%     | 5.66%   |
 | base   | 4.25%     |           | 4.19%     | 4.27%   |
 | small  | 3.05%     |           | 3.02%     | 3.05%   |
-| medium | 3.01%     |           |           | 3.02%   |
+| medium | 3.01%     |           | 2.84%     | 3.02%   |
 
 - 性能：在具有73条测试音频的[librispeech_asr_dummy](https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy)数据集上对比原始Huggingface模型和TensorRT-LLM模型的加速比
 
@@ -79,7 +79,7 @@ python cal_wer.py --whisper whisper-tiny.en
 | tiny   | 1.6X      | 1.7X      | 1.6X      |
 | base   | 1.8X      |           | 1.7X      |
 | small  | 1.3X      |           | 1.3X      |
-| medium | 1.2X      |           |           |
+| medium | 1.2X      |           | 1.2X      |
 
 ### Bug报告（可选）
 
