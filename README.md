@@ -8,13 +8,18 @@
 
 运行步骤(假设当前仓库/README.md所在路径为：```/root/workspace/trt2023```)：
 ```
+# docker启动比赛镜像
+bash start_docker.sh
+
+# 进入挂载的代码路径
+cd trt2023
+
 # 更新docker内python的tensor-llm包的模型代码
-cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/whisper \
-        /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models
-cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/__init__.py \
-        /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models/__init__.py
-cp -r tensorrt_llm_july-release-v1/tensorrt_llm/builder.py \
-        /usr/local/lib/python3.8/dist-packages/tensorrt_llm/builder.py
+bash bash update_code.sh
+# 或者手动逐个cp
+cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/whisper /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models
+cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/__init__.py /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models/__init__.py
+cp -r tensorrt_llm_july-release-v1/tensorrt_llm/builder.py /usr/local/lib/python3.8/dist-packages/tensorrt_llm/builder.py
 
 # 进入example/whisper目录
 cd tensorrt_llm_july-release-v1/examples/whisper
@@ -27,6 +32,9 @@ git clone https://huggingface.co/openai/whisper-tiny.en
 python build_encoder.py --whisper whisper-tiny.en
 python build_decoder.py --whisper whisper-tiny.en
 
+# 安装依赖(无法访问github的话，whipser库会安装失败)
+pip install -r requirements.txt
+
 # 运行engine并于huggingface进行比较
 python run.py --whisper whisper-tiny.en --compare
 
@@ -36,24 +44,28 @@ python get_LibriSpeech.py
 python cal_wer.py --whisper whisper-tiny.en
 ```
 
-
 ### 主要开发工作
 
 #### 开发工作的难点
 
-请在这一节里总结你的工作难点与亮点。
-- 如果使用 TensorRT 进行优化，请介绍一下在模型在导出时、或用polygraphy/trtexec解析时，或在使用TensorRT中，遇到了什么问题并解决了。换句话说，针对这个模型，我们为什么需要额外的工程手段。
-- 如果使用 TensorRT-LLM 进行优化，描述以下方面可供选手参考：如果搭建了新模型， 请介绍模型结构有无特别之处，在模型的搭建过程中使用了什么算子，有没有通过plugin支持的新算子。如果支持新feature，请介绍这个feature具体需要修改哪些模块才能实现。如果优化已有模型，请介绍模型性能瓶颈以及解决方法。另外还可以包含工程实现以及debug过程中的难点。
+Whisper这个模型是由encoder和decoder两部分组成的。其对输入音频进行一次encoder编码，然后使用各种策略(实现的是greedy search)进行多次decoder解码得到最后的文本。所以需要制作的是三部分：encoder模型、decoder模型、解码Session。
+
+##### encoder模型
+核心算子就是trtllm已经有了的Attention层就足够了，因为它只需要计算一次，所以不涉及到kv cache的问题，同时它只包含self attention部分，是一个很简单的模型，上手难度低。
+
+##### decoder模型
+核心算子还是Attention，但是trtllm自带的不满足我们是需求，在这里，我们既需要self也需要cross的attention，同时还需要支持with/without cache的情况，一共有四种组合。
+
+self和cross是编译时候就能确定下来的，所以不是太大的问题，可以直接用if分支做编译时候的判断决定。但cache是动态的，正常来说，decoder在第一次计算时候，会完整计算kv，并把这个cache记录下来，供给后面的decoder使用，同时后面的decoder在计算的时候也会更新这个cache。
+
+参考[transformers库里的实现](transformers/src/transformers/models/whisper/modeling_whisper.py)，所以这里我们需要引入一个额外的变量，来告知模型：用不用cache，用多少cache这个问题。一开始我的想法是引入一个shape为(1,)的mask输入，通过gather(mask,0)获取mask里面记录的cache长度数值，但后来发现这个东西因为它会改变后面shape，所以就变成了这个数值会影响shape，导致模型构建失败，因为在构建时候后面的算子无法获取准确的shape。所以后面就改成了用一个(-1,)shape的mask，用mask的shape来记录cache的长度，这样的话，在给定输入的shape后，模型就能立马推断出输出的shape，输出的shape不再依赖于输入的具体数值。
 
 ### 开发与优化过程
 
-这一部分是报告的主体。请把自己假定为老师，为 TensorRT 或 TensorRT-LLM 的初学者讲述如何从原始模型出发，经过一系列开发步骤，得到优化后的 TensorRT 或 TensorRT-LLM 模型。或者你是如何一步步通过修改哪些模块添加了新feature的。
-
-建议：
-
-- 分步骤讲清楚开发过程
-- 最好能介绍为什么需要某个特别步骤，通过这个特别步骤解决了什么问题
-  - 比如，通过Nsight Systems绘制timeline做了性能分析，发现attention时间占比高且有优化空间（贴图展示分析过程），所以决定要写plugin。然后介绍plugin的设计与实现，并在timeline上显示attention这一部分的性能改进。
+1. 简化pytorch代码：以whisper为例，其在transformers库里的实现是很繁琐的，由于transformers需要支持大量的模型，代码中存在大量的分支，但对于我们需要的whisper来说，其中很多的代码都是冗余的，甚至会干扰我们的开发。因此最开始要先对pytorch代码进行抽丝剥茧，找到模型最本质的实现。代码中的transformers目录就是被我修改简化过的代码。
+2. 明确模型的运行流程：以whisper为例，模型分为encoder和deocder，解码pipeline还需要greedy search。我们需要阅读代码，一步一步的找出模型运行的流程，对于whisper模型，可以看[DOC](./DOC.md)文档。
+3. 挑软柿子下手：以whisper为例，通过阅读代码，可以发现，encoder是最简单的，核心需要的Attention也可以从trtllm中获取，先制作encoder模型，一层一层的实现，具体可以参照github中的commit：[add:WhisperEncoderAttention torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/32e6c86348501dbdb439c8781f61d17270171005) --> [add:WhisperEncoderLayer torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/a032479660de452ff1968b3099aa19b95352604c) --> [add:WhisperEncoder torch](https://github.com/EdVince/whisper-trtllm/commit/db4ddb1caa73397a0ccdefa5cb25f232a99434a9) --> [add:WhisperEncoder trtllm](https://github.com/EdVince/whisper-trtllm/commit/1ce15ae9bfdd8c0d9a51b5aecfa4a17c30702833)
+4. 攻坚难处：以whisper为例，decoder模型所用的Attention需要支持self/cross和with/without cache。要认真思考各种实现的可能并进行尝试，找到一个可行的方向，具体不赘述。
 
 ### 优化效果
 
@@ -64,22 +76,22 @@ python cal_wer.py --whisper whisper-tiny.en
 - 精度：对于Whisper模型，我们使用wer来评价模型的精度，并于OpenAI的官方指标进行比较。对于wer指标，值越小模型精度越高。参考值来源于[leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
 
 ***fp32+fp32表示分别表示encoder和decoder的精度***
-| model  | fp32+fp32 | fp16+fp16 | bf16+bf16 | ref wer |
-| ------ | --------- | --------- | --------- | ------- |
-| tiny   | 5.61%     | 5.60%     | 5.67%     | 5.66%   |
-| base   | 4.25%     |           | 4.19%     | 4.27%   |
-| small  | 3.05%     |           | 3.02%     | 3.05%   |
-| medium | 3.01%     |           | 2.84%     | 3.02%   |
+| model  | fp32+fp32 | ref wer |
+| ------ | --------- | ------- |
+| tiny   | 5.61%     | 5.66%   |
+| base   | 4.25%     | 4.27%   |
+| small  | 3.05%     | 3.05%   |
+| medium | 3.01%     | 3.02%   |
 
 - 性能：在具有73条测试音频的[librispeech_asr_dummy](https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy)数据集上对比原始Huggingface模型和TensorRT-LLM模型的加速比
 
 ***加速比***
-| model  | fp32+fp32 | fp16+fp16 | bf16+bf16 |
-| ------ | --------- | --------  | --------- |
-| tiny   | 1.6X      | 1.7X      | 1.6X      |
-| base   | 1.8X      |           | 1.7X      |
-| small  | 1.3X      |           | 1.3X      |
-| medium | 1.2X      |           | 1.2X      |
+| model  | fp32+fp32 |
+| ------ | --------- |
+| tiny   | 1.6X      |
+| base   | 1.8X      |
+| small  | 1.3X      |
+| medium | 1.2X      |
 
 ### Bug报告（可选）
 
