@@ -1,8 +1,10 @@
 ### 总述
 
-本工作是 [NVIDIA TensorRT Hackathon 2023](https://github.com/NVIDIA/trt-samples-for-hackathon-cn/tree/master/Hackathon2023) 的参赛题目，具体选题是 2.用TensorRT-LLM实现新模型
+本工作是 [NVIDIA TensorRT Hackathon 2023](https://github.com/NVIDIA/trt-samples-for-hackathon-cn/tree/master/Hackathon2023) 的参赛题目，具体选题是 2.用TensorRT-LLM实现新模型 + 4.为TensorRT-LLM添加新feature
 
 所实现的模型为OpenAI开发的语音识别模型[whisper](https://github.com/openai/whisper)，whisper是一个通用的语音识别模型，其语音识别功能强大，超越很多闭源的商用模型，官方仓库在github上累计获得超过44K的star。本工作主要是使用TensorRT-LLM实现了whipser的四个英语语音识别模型，分别是：[whisper-tiny.en](https://huggingface.co/openai/whisper-tiny.en), [whisper-base.en](https://huggingface.co/openai/whisper-base.en), [whisper-small.en](https://huggingface.co/openai/whisper-small.en)和[whisper-medium.en](https://huggingface.co/openai/whisper-medium.en)
+
+所添加的新feature为支持self/cross以及with/without kv cache的Attention实现。
 
 优化效果：使用float32精度构建模型，wer指标均优于或等于官方模型的精度，相较于huggingface加速比在1.2~1.4X
 
@@ -49,6 +51,8 @@ python cal_wer.py --whisper whisper-tiny.en
 #### 开发工作的难点
 
 Whisper这个模型是由encoder和decoder两部分组成的。其对输入音频进行一次encoder编码，然后使用各种策略(实现的是greedy search)进行多次decoder解码得到最后的文本。所以需要制作的是三部分：encoder模型、decoder模型、解码Session。
+
+对于decoder模型所需要的功能丰富的Attention，这里实现了这个新[feature](tensorrt_llm_july-release-v1/tensorrt_llm/models/whisper/model.py)，具体实现是WhisperDecoderAttention这个类，基于自带的Attention修改得来，具体修改是修改了对key和value的proj计算，通过引入一个mask，用于支持cache。对于self attention的情况，是最简单的，就是记录下第一次计算的k和v的proj值，后面重复使用就行了；而对于cross attention的情况，每次都要计算当前输入的k和v的proj值，还需要跟历史的kv cache进行拼接cat，得到本次的最终的kv proj量，这里同样使用一个mask来控制所cat的历史cache长度。
 
 ##### encoder模型
 核心算子就是trtllm已经有了的Attention层就足够了，因为它只需要计算一次，所以不涉及到kv cache的问题，同时它只包含self attention部分，是一个很简单的模型，上手难度低。
