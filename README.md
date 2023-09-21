@@ -17,7 +17,7 @@ bash start_docker.sh
 cd trt2023
 
 # 更新docker内python的tensor-llm包的模型代码
-bash bash update_code.sh
+bash update_code.sh
 # 或者手动逐个cp
 cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/whisper /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models
 cp -r tensorrt_llm_july-release-v1/tensorrt_llm/models/__init__.py /usr/local/lib/python3.8/dist-packages/tensorrt_llm/models/__init__.py
@@ -37,12 +37,12 @@ python build_decoder.py --whisper whisper-tiny.en
 # 安装依赖(无法访问github的话，whipser库会安装失败)
 pip install -r requirements.txt
 
-# 运行engine并于huggingface进行比较
+# 运行engine并与huggingface进行比较
 python run.py --whisper whisper-tiny.en --compare
 
 # 下载librispeech数据集，在docker中无法安装torchaudio，可以在宿主机中运行，数据会存储在librispeech.cache
 python get_LibriSpeech.py
-# 计算engine的wer值
+# 计算trtllm engine的wer指标
 python cal_wer.py --whisper whisper-tiny.en
 ```
 
@@ -58,17 +58,17 @@ Whisper这个模型是由encoder和decoder两部分组成的。其对输入音�
 核心算子就是trtllm已经有了的Attention层就足够了，因为它只需要计算一次，所以不涉及到kv cache的问题，同时它只包含self attention部分，是一个很简单的模型，上手难度低。
 
 ##### decoder模型
-核心算子还是Attention，但是trtllm自带的不满足我们是需求，在这里，我们既需要self也需要cross的attention，同时还需要支持with/without cache的情况，一共有四种组合。
+核心算子还是Attention，但是trtllm自带的不满足我们的需求，在这里，我们既需要self也需要cross的attention，同时还需要支持with/without cache的情况，一共有四种组合。
 
 self和cross是编译时候就能确定下来的，所以不是太大的问题，可以直接用if分支做编译时候的判断决定。但cache是动态的，正常来说，decoder在第一次计算时候，会完整计算kv，并把这个cache记录下来，供给后面的decoder使用，同时后面的decoder在计算的时候也会更新这个cache。
 
-参考[transformers库里的实现](transformers/src/transformers/models/whisper/modeling_whisper.py)，所以这里我们需要引入一个额外的变量，来告知模型：用不用cache，用多少cache这个问题。一开始我的想法是引入一个shape为(1,)的mask输入，通过gather(mask,0)获取mask里面记录的cache长度数值，但后来发现这个东西因为它会改变后面shape，所以就变成了这个数值会影响shape，导致模型构建失败，因为在构建时候后面的算子无法获取准确的shape。所以后面就改成了用一个(-1,)shape的mask，用mask的shape来记录cache的长度，这样的话，在给定输入的shape后，模型就能立马推断出输出的shape，输出的shape不再依赖于输入的具体数值。
+参考[transformers库里的实现](transformers/src/transformers/models/whisper/modeling_whisper.py)，所以这里我们需要引入一个额外的变量，来告知模型：用不用cache，用多少cache这个问题。一开始我的想法是引入一个shape为(1,)的mask输入，通过gather(mask,0)获取mask里面记录的cache长度数值，但后来发现这种实现是数值改变后面的shape，需要运行时决断，导致模型构建失败，因为在构建时候后面的算子无法获取准确的shape。所以后面就改成了用一个(-1,)shape的mask，用mask的shape来记录cache的长度，这样的话，在给定输入的shape后，模型就能立马推断出输出的shape，输出的shape不再依赖于输入的具体数值。
 
 ### 开发与优化过程
 
 1. 简化pytorch代码：以whisper为例，其在transformers库里的实现是很繁琐的，由于transformers需要支持大量的模型，代码中存在大量的分支，但对于我们需要的whisper来说，其中很多的代码都是冗余的，甚至会干扰我们的开发。因此最开始要先对pytorch代码进行抽丝剥茧，找到模型最本质的实现。代码中的transformers目录就是被我修改简化过的代码。
 2. 明确模型的运行流程：以whisper为例，模型分为encoder和deocder，解码pipeline还需要greedy search。我们需要阅读代码，一步一步的找出模型运行的流程，对于whisper模型，可以看[DOC](./DOC.md)文档。
-3. 挑软柿子下手：以whisper为例，通过阅读代码，可以发现，encoder是最简单的，核心需要的Attention也可以从trtllm中获取，先制作encoder模型，一层一层的实现，具体可以参照github中的commit：[add:WhisperEncoderAttention torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/32e6c86348501dbdb439c8781f61d17270171005) --> [add:WhisperEncoderLayer torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/a032479660de452ff1968b3099aa19b95352604c) --> [add:WhisperEncoder torch](https://github.com/EdVince/whisper-trtllm/commit/db4ddb1caa73397a0ccdefa5cb25f232a99434a9) --> [add:WhisperEncoder trtllm](https://github.com/EdVince/whisper-trtllm/commit/1ce15ae9bfdd8c0d9a51b5aecfa4a17c30702833)
+3. 挑软柿子下手：以whisper为例，通过阅读代码，可以发现，encoder是最简单的，核心需要的Attention也可以从trtllm中直接获取，先制作encoder模型，一层一层的实现，具体可以参照github中的commit：[add:WhisperEncoderAttention torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/32e6c86348501dbdb439c8781f61d17270171005) --> [add:WhisperEncoderLayer torch&trtllm](https://github.com/EdVince/whisper-trtllm/commit/a032479660de452ff1968b3099aa19b95352604c) --> [add:WhisperEncoder torch](https://github.com/EdVince/whisper-trtllm/commit/db4ddb1caa73397a0ccdefa5cb25f232a99434a9) --> [add:WhisperEncoder trtllm](https://github.com/EdVince/whisper-trtllm/commit/1ce15ae9bfdd8c0d9a51b5aecfa4a17c30702833)
 4. 攻坚难处：以whisper为例，decoder模型所用的Attention需要支持self/cross和with/without cache。要认真思考各种实现的可能并进行尝试，找到一个可行的方向，具体不赘述。
 
 ### 优化效果
@@ -77,7 +77,7 @@ self和cross是编译时候就能确定下来的，所以不是太大的问题�
 
 测试代码：测试代码具体可以跳转到```tensorrt_llm_july-release-v1/examples/whisper```目录下，可以使用```python run.py --whisper whisper-xxxx.en --compare```计算相对于Huggingface的加速比，可以使用```python cal_wer --whisper whisper-xxxx.en```计算wer指标
 
-- 精度：对于Whisper模型，我们使用wer来评价模型的精度，并于OpenAI的官方指标进行比较。对于wer指标，值越小模型精度越高。参考值来源于[leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
+- 精度：对于Whisper模型，我们使用wer来评价模型的精度，并与OpenAI的官方指标进行比较。对于wer指标，值越小模型精度越高。参考值来源于[leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard)
 
 ***fp32+fp32表示分别表示encoder和decoder的精度***
 | model  | fp32+fp32 | ref wer |
