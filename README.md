@@ -99,7 +99,7 @@ self和cross是编译时候就能确定下来的，所以不是太大的问题�
 
 ### Bug报告（可选）
 
-对应的代码在bug0的commit上
+对应的代码在bug0的commit上，同时提交在[issue#97](https://github.com/NVIDIA/trt-samples-for-hackathon-cn/issues/97)
 1. 实现了支持self/cross以及w/wo cache的WhisperDecoderAttention，WhisperDecoderLayer调用WhisperDecoderAttention两次分别做self attn和cross attn
 2. WhisperDecoderAttention的四种用法单独测试正常，集成到WhisperDecoderLayer里面后，self attn的value cache异常
 3. 代码在"tensorrt_llm_july-release-v1/tensorrt_llm/models/test/model.py"的WhisperDecoderAttention类的forward方法的"elif is_reuse"分支内，正常用法是不用mark output的，但这样出来的是全0，加上mark output是正常的，猜测是fusion有问题
